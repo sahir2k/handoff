@@ -599,7 +599,6 @@ RESET  = "\033[0m"
 ORANGE = "\033[38;5;208m"   # claude
 CYAN   = "\033[36m"         # codex
 WHITE  = "\033[37m"
-INVERT = "\033[7m"          # reverse video for highlight — inherits terminal bg
 
 def _hide_cursor():
     sys.stdout.write("\033[?25l")
@@ -724,7 +723,7 @@ def main() -> None:
     ]
     def fmt_scope(i, item, sel):
         ptr = f"{BOLD}>{RESET}" if sel else " "
-        hl = INVERT if sel else ""
+        hl = BOLD if sel else ""
         return f"  {ptr} {hl}{item}{RESET}"
 
     si = pick("scope", scope_items, fmt_fn=fmt_scope)
@@ -742,13 +741,14 @@ def main() -> None:
 
     def fmt_session(i, s, sel):
         ptr = f"{BOLD}>{RESET}" if sel else " "
-        hl = INVERT if sel else ""
         src_color = ORANGE if s.source == "claude" else CYAN
         src = s.source.ljust(6)
         age = fmt_age(s.updated_at).ljust(4)
         loc = (fmt_cwd(s.cwd).ljust(18) + "  ") if show_cwd else ""
         summary = clean_summary(s.summary or "(no summary)")[:52]
-        return f"  {ptr} {hl}{src_color}{src}{RESET}  {hl}{DIM}{age}{RESET}  {hl}{loc}{summary}{RESET}"
+        if sel:
+            return f"  {ptr} {BOLD}{src_color}{src}{RESET}  {BOLD}{age}{RESET}  {BOLD}{loc}{summary}{RESET}"
+        return f"  {ptr} {src_color}{src}{RESET}  {DIM}{age}{RESET}  {loc}{summary}"
 
     print()
     col_hdr = ("     " + "tool".ljust(6) + "  " + "age".ljust(4) + "  " +
@@ -784,7 +784,7 @@ def main() -> None:
 
     def fmt_tier(i, item, sel):
         ptr = f"{BOLD}>{RESET}" if sel else " "
-        hl = INVERT if sel else ""
+        hl = BOLD if sel else ""
         return f"  {ptr} {hl}{item[1]}{RESET}"
 
     ti = pick("context", tier_items, fmt_fn=fmt_tier)
@@ -795,7 +795,7 @@ def main() -> None:
     # ── step 5: launch config ─────────────────────────────────────────────────
     def fmt_opt(i, item, sel):
         ptr = f"{BOLD}>{RESET}" if sel else " "
-        hl = INVERT if sel else ""
+        hl = BOLD if sel else ""
         return f"  {ptr} {hl}{item}{RESET}"
 
     extra_args = []
