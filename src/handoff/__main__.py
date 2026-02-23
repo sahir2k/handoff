@@ -657,8 +657,7 @@ class HandoffApp:
     def run(self) -> Optional[dict]:
         from textual.app import App, ComposeResult
         from textual.widgets import OptionList, Label, Static
-        from textual.widgets.option_list import Option, Separator
-        from textual import on
+        from textual.widgets._option_list import Option
 
         sessions = self.sessions
         cwd = self.cwd
@@ -706,16 +705,16 @@ class HandoffApp:
             summary = clean_summary(s.summary or "(no summary)")[:52]
             return f"  {src}  {age}  {loc}{summary}"
 
+        col_header = ("  " + "tool".ljust(6) + "  " + "age".ljust(4) + "  " +
+                      ("dir".ljust(18) + "  " if show_cwd else "") + "summary")
+
         class SessionApp(App):
             CSS_PATH = None
             CSS = CSS
             def compose(self) -> ComposeResult:
                 yield Label("  session", classes="label")
-                items = []
-                items.append(Separator())
-                for s in display:
-                    items.append(Option(row(s), id=s.id))
-                yield OptionList(*items)
+                yield Static(col_header, classes="hint")
+                yield OptionList(*[Option(row(s), id=s.id) for s in display])
                 yield Static("  j/k · enter · q", classes="hint")
             def on_option_list_option_selected(self, event) -> None:
                 result_holder.append(event.option.id)
