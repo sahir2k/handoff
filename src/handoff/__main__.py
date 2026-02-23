@@ -666,7 +666,7 @@ def main() -> None:
         ("text",        ""),
     ])
 
-    print(_dim("scanning sessions..."))
+    print("scanning sessions...")
     claude_sessions = parse_claude_sessions()
     codex_sessions  = parse_codex_sessions()
     all_sessions = claude_sessions + codex_sessions
@@ -683,8 +683,8 @@ def main() -> None:
     n_all  = len(all_sessions)
 
     scope_choices = [
-        q.Choice(title=f"this directory   {_dim(fmt_cwd(cwd))}  {_dim(f'({n_here} sessions)')}", value="here"),
-        q.Choice(title=f"all sessions     {_dim(f'({n_all} sessions)')}", value="all"),
+        q.Choice(title=f"this directory   {fmt_cwd(cwd)}  ({n_here} sessions)", value="here"),
+        q.Choice(title=f"all sessions     ({n_all} sessions)", value="all"),
     ]
     scope = q.select(
         "scope:",
@@ -703,7 +703,7 @@ def main() -> None:
     # ── step 2: session picker ────────────────────────────────────────────────
     show_cwd = scope == "all"
     display  = pool[:40]
-    sep = q.Separator(_dim(f"  {'tool':<8}  {'age':<7}  {'summary'}"))
+    sep = q.Separator(f"  {'tool':<8}  {'age':<7}  {'summary'}")
     session_choices = [sep] + [
         q.Choice(title=session_label(s, show_cwd=show_cwd), value=s)
         for s in display
@@ -718,14 +718,14 @@ def main() -> None:
         sys.exit(0)
 
     # ── step 3: load + tier ───────────────────────────────────────────────────
-    print(_dim(f"\n  loading {session.source} {session.id[:8]}..."))
+    print(f"\n  loading {session.source} {session.id[:8]}...")
     if session.source == "claude":
         load_claude_context(session)
     else:
         load_codex_context(session)
 
     target = "codex" if session.source == "claude" else "claude"
-    print(_dim(f"  {session.source} -> {target}  |  {len(session.messages)} msgs  {len(session.tool_calls)} tools  {len(session.thinking)} thinking\n"))
+    print(f"  {session.source} -> {target}  |  {len(session.messages)} msgs  {len(session.tool_calls)} tools  {len(session.thinking)} thinking\n")
 
     t1 = make_tier1(session)
     t2 = make_tier2(session)
