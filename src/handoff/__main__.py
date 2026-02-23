@@ -588,20 +588,13 @@ def fmt_cwd(cwd: str) -> str:
     parts = cwd.split("/")
     return "/".join(parts[-2:]) if len(parts) > 2 else cwd
 
-def session_label(s: SessionData, show_cwd: bool = False):
-    from prompt_toolkit.formatted_text import HTML
+def session_label(s: SessionData, show_cwd: bool = False) -> str:
+    src = ("claude" if s.source == "claude" else "codex ").ljust(6)
     age = fmt_age(s.updated_at).ljust(7)
-    if show_cwd:
-        loc = fmt_cwd(s.cwd).ljust(20) + "  "
-    else:
-        loc = ""
-    raw = (s.summary or "(no summary)").replace("\n", " ").replace("\r", "").replace("<", "").replace(">", "").replace("&", "")
+    loc = (fmt_cwd(s.cwd).ljust(20) + "  ") if show_cwd else ""
+    raw = (s.summary or "(no summary)").replace("\n", " ").replace("\r", "")
     summary = raw[:55]
-    if s.source == "claude":
-        src_html = '<claude>claude</claude>'
-    else:
-        src_html = '<codex>codex </codex>'
-    return HTML(f"{src_html}  {age}  {loc}{summary}")
+    return f"{src}  {age}  {loc}{summary}"
 
 def _dim(text: str) -> str:
     return f"\033[2m{text}\033[0m"
@@ -671,8 +664,6 @@ def main() -> None:
         ("separator",   "fg:ansibrightblack"),
         ("instruction", "fg:ansibrightblack"),
         ("text",        ""),
-        ("claude",      "fg:ansiyellow"),
-        ("codex",       "fg:ansicyan"),
     ])
 
     print("scanning sessions...")
