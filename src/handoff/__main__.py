@@ -544,29 +544,26 @@ def make_tier3(session: SessionData, n_messages: int = 20) -> str:
 
 # ── launch ────────────────────────────────────────────────────────────────────
 
-def launch_with_context(target: str, markdown: str, cwd: str) -> None:
-    # write handoff file to project dir
+def launch_with_context(target: str, markdown: str, cwd: str, extra_args: list) -> None:
     handoff_path = Path(cwd) / ".handoff.md" if cwd else Path.cwd() / ".handoff.md"
     try:
         handoff_path.write_text(markdown)
-        print(f"wrote handoff file: {handoff_path}")
+        print(f"  wrote {handoff_path}")
     except Exception as e:
-        print(f"warning: could not write handoff file: {e}")
+        print(f"  warning: could not write handoff file: {e}")
 
     intro = f"I'm continuing a coding session. Here's the full context:\n\n---\n\n{markdown}"
+    work_dir = cwd if cwd and Path(cwd).exists() else str(Path.cwd())
 
     if target == "codex":
-        # codex takes the prompt as a positional argument
-        cmd = ["codex", intro]
+        cmd = ["codex"] + extra_args + [intro]
     elif target == "claude":
-        cmd = ["claude", "-p", intro]
+        cmd = ["claude"] + extra_args + ["-p", intro]
     else:
         print(f"unknown target: {target}")
         sys.exit(1)
 
-    work_dir = cwd if cwd and Path(cwd).exists() else str(Path.cwd())
-    print(f"launching {target} in {work_dir}...\n")
-
+    print(f"  launching {target} in {work_dir}\n")
     try:
         subprocess.run(cmd, cwd=work_dir)
     except FileNotFoundError:
@@ -591,35 +588,87 @@ def fmt_cwd(cwd: str) -> str:
     parts = cwd.split("/")
     return "/".join(parts[-2:]) if len(parts) > 2 else cwd
 
-def session_label(s: SessionData) -> str:
-    tag = f"[{s.source}]".ljust(8)
-    age = fmt_age(s.updated_at).ljust(8)
-    cwd = fmt_cwd(s.cwd).ljust(22)
-    summary = (s.summary or "(no summary)")[:52]
-    return f"{tag}  {age}  {cwd}  {summary}"
+def session_label(s: SessionData, show_cwd: bool = False) -> str:
+    src  = f"[{s.source}]".ljust(8)
+    age  = fmt_age(s.updated_at).ljust(7)
+    if show_cwd:
+        loc = fmt_cwd(s.cwd).ljust(20) + "  "
+    else:
+        loc = ""
+    summary = (s.summary or "(no summary)")[:55]
+    return f"{src}  {age}  {loc}{summary}"
+
+def _dim(text: str) -> str:
+    return f"\033[2m{text}\033[0m"
+
+def _bold(text: str) -> str:
+    return f"\033[1m{text}\033[0m"
+
+# ── config builder ────────────────────────────────────────────────────────────
+
+CLAUDE_MODELS = ["(default)", "claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5-20251001", "claude-opus-4-6", "claude-sonnet-4-6"]
+CODEX_MODELS  = ["(default)", "o3", "o4-mini", "gpt-4o", "gpt-4.1", "gpt-4.1-mini"]
+
+CODEX_SANDBOX  = ["(default)", "workspace-write", "read-only", "danger-full-access"]
+CODEX_APPROVAL = ["(default)", "on-request", "never", "untrusted"]
+
+CLAUDE_PERMISSION = ["(default)", "bypassPermissions", "acceptEdits", "dontAsk", "plan"]
+
+def build_codex_args(q, style) -> list:
+    model = q.select("model:", choices=CODEX_MODELS, style=style).ask()
+    sandbox = q.select("sandbox:", choices=CODEX_SANDBOX, style=style).ask()
+    approval = q.select("approval policy:", choices=CODEX_APPROVAL, style=style).ask()
+    web_search = q.confirm("enable web search?", default=False, style=style).ask()
+
+    if model is None or sandbox is None:
+        sys.exit(0)
+
+    args = []
+    if model != "(default)":
+        args += ["-m", model]
+    if sandbox != "(default)":
+        args += ["-s", sandbox]
+    if approval != "(default)":
+        args += ["-a", approval]
+    if web_search:
+        args += ["--search"]
+    return args
+
+def build_claude_args(q, style) -> list:
+    model = q.select("model:", choices=CLAUDE_MODELS, style=style).ask()
+    permission = q.select("permission mode:", choices=CLAUDE_PERMISSION, style=style).ask()
+
+    if model is None or permission is None:
+        sys.exit(0)
+
+    args = []
+    if model != "(default)":
+        args += ["--model", model]
+    if permission != "(default)":
+        args += ["--permission-mode", permission]
+    return args
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    import questionary
+    import questionary as q
     from questionary import Style
 
-    theme = Style([
-        ("qmark",        "fg:#6c71c4 bold"),
-        ("question",     "bold"),
-        ("answer",       "fg:#268bd2 bold"),
-        ("pointer",      "fg:#6c71c4 bold"),
-        ("highlighted",  "fg:#268bd2 bold"),
-        ("selected",     "fg:#2aa198"),
-        ("separator",    "fg:#586e75"),
-        ("instruction",  "fg:#586e75"),
-        ("text",         ""),
+    style = Style([
+        ("qmark",       "fg:ansidefault bold"),
+        ("question",    "bold"),
+        ("answer",      "fg:ansidefault bold"),
+        ("pointer",     "fg:ansidefault bold"),
+        ("highlighted", "fg:ansidefault bold underline"),
+        ("selected",    "fg:ansidefault"),
+        ("separator",   "fg:ansidefault"),
+        ("instruction", "fg:ansidefault"),
+        ("text",        ""),
     ])
 
-    print("scanning sessions...")
+    print(_dim("scanning sessions..."))
     claude_sessions = parse_claude_sessions()
-    codex_sessions = parse_codex_sessions()
-
+    codex_sessions  = parse_codex_sessions()
     all_sessions = claude_sessions + codex_sessions
     all_sessions.sort(key=lambda s: s.updated_at, reverse=True)
 
@@ -627,67 +676,85 @@ def main() -> None:
         print("no sessions found")
         sys.exit(1)
 
-    display = all_sessions[:40]
-    print(f"found {len(claude_sessions)} claude + {len(codex_sessions)} codex sessions")
+    # ── step 1: scope filter ──────────────────────────────────────────────────
+    cwd = os.getcwd()
+    here = [s for s in all_sessions if s.cwd and (s.cwd == cwd or s.cwd.startswith(cwd + "/"))]
+    n_here = len(here)
+    n_all  = len(all_sessions)
 
-    # session picker
-    choices = [questionary.Choice(title=session_label(s), value=s) for s in display]
-    session = questionary.select(
-        "pick a session:",
-        choices=choices,
-        style=theme,
-        use_shortcuts=False,
+    scope_choices = [
+        q.Choice(title=f"this directory   {_dim(fmt_cwd(cwd))}  {_dim(f'({n_here} sessions)')}", value="here"),
+        q.Choice(title=f"all sessions     {_dim(f'({n_all} sessions)')}", value="all"),
+    ]
+    scope = q.select(
+        "scope:",
+        choices=scope_choices,
+        style=style,
         use_indicator=True,
     ).ask()
+    if scope is None:
+        sys.exit(0)
 
+    pool = here if scope == "here" else all_sessions
+    if not pool:
+        print(f"no sessions found in {cwd}")
+        sys.exit(1)
+
+    # ── step 2: session picker ────────────────────────────────────────────────
+    show_cwd = scope == "all"
+    display  = pool[:40]
+    sep = q.Separator(_dim(f"  {'tool':<8}  {'age':<7}  {'summary'}"))
+    session_choices = [sep] + [
+        q.Choice(title=session_label(s, show_cwd=show_cwd), value=s)
+        for s in display
+    ]
+    session = q.select(
+        "session:",
+        choices=session_choices,
+        style=style,
+        use_indicator=True,
+    ).ask()
     if session is None:
         sys.exit(0)
 
-    # load full context
-    print(f"\nloading {session.source} session {session.id[:12]}...")
+    # ── step 3: load + tier ───────────────────────────────────────────────────
+    print(_dim(f"\n  loading {session.source} {session.id[:8]}..."))
     if session.source == "claude":
         load_claude_context(session)
     else:
         load_codex_context(session)
 
     target = "codex" if session.source == "claude" else "claude"
-    print(f"{session.source} -> {target}  |  {len(session.messages)} messages  {len(session.tool_calls)} tool calls  {len(session.thinking)} thinking blocks")
+    print(_dim(f"  {session.source} -> {target}  |  {len(session.messages)} msgs  {len(session.tool_calls)} tools  {len(session.thinking)} thinking\n"))
 
-    # build tiers
     t1 = make_tier1(session)
     t2 = make_tier2(session)
     t3 = make_tier3(session)
-
-    tok1 = est_tokens(t1)
-    tok2 = est_tokens(t2)
-    tok3 = est_tokens(t3)
+    tok1, tok2, tok3 = est_tokens(t1), est_tokens(t2), est_tokens(t3)
 
     tier_choices = [
-        questionary.Choice(
-            title=f"full      {tok1:>6,} tokens  (conversation + tools + thinking + files)",
-            value=t1,
-        ),
-        questionary.Choice(
-            title=f"focused   {tok2:>6,} tokens  (conversation + tools + files)",
-            value=t2,
-        ),
-        questionary.Choice(
-            title=f"minimal   {tok3:>6,} tokens  (conversation only)",
-            value=t3,
-        ),
+        q.Choice(title=f"full     {tok1:>6,} tok  conversation + tools + thinking + files", value=t1),
+        q.Choice(title=f"focused  {tok2:>6,} tok  conversation + tools + files", value=t2),
+        q.Choice(title=f"minimal  {tok3:>6,} tok  conversation only", value=t3),
     ]
-
-    markdown = questionary.select(
-        "pick context tier:",
+    markdown = q.select(
+        "context:",
         choices=tier_choices,
-        style=theme,
+        style=style,
         use_indicator=True,
     ).ask()
-
     if markdown is None:
         sys.exit(0)
 
-    launch_with_context(target, markdown, session.cwd)
+    # ── step 4: launch config ─────────────────────────────────────────────────
+    print()
+    if target == "codex":
+        extra_args = build_codex_args(q, style)
+    else:
+        extra_args = build_claude_args(q, style)
+
+    print()
+    launch_with_context(target, markdown, session.cwd, extra_args)
 
 if __name__ == "__main__":
     main()
