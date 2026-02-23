@@ -549,19 +549,16 @@ def launch_with_context(target: str, markdown: str, cwd: str) -> None:
     handoff_path = Path(cwd) / ".handoff.md" if cwd else Path.cwd() / ".handoff.md"
     try:
         handoff_path.write_text(markdown)
-        print(f"\nwrote handoff file: {handoff_path}")
+        print(f"wrote handoff file: {handoff_path}")
     except Exception as e:
         print(f"warning: could not write handoff file: {e}")
 
     intro = f"I'm continuing a coding session. Here's the full context:\n\n---\n\n{markdown}"
 
     if target == "codex":
-        cmd = ["codex", "--context", intro]
+        # codex takes the prompt as a positional argument
+        cmd = ["codex", intro]
     elif target == "claude":
-        # write to a temp file and use -p flag
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
-            f.write(intro)
-            tmp = f.name
         cmd = ["claude", "-p", intro]
     else:
         print(f"unknown target: {target}")
@@ -594,19 +591,31 @@ def fmt_cwd(cwd: str) -> str:
     parts = cwd.split("/")
     return "/".join(parts[-2:]) if len(parts) > 2 else cwd
 
-def print_sessions(sessions: list[SessionData]) -> None:
-    print()
-    for i, s in enumerate(sessions, 1):
-        tag = f"[{s.source}]".ljust(8)
-        age = fmt_age(s.updated_at).ljust(8)
-        cwd = fmt_cwd(s.cwd).ljust(25)
-        summary = (s.summary or "(no summary)")[:50]
-        print(f"  {i:>2}.  {tag}  {age}  {cwd}  {summary}")
-    print()
+def session_label(s: SessionData) -> str:
+    tag = f"[{s.source}]".ljust(8)
+    age = fmt_age(s.updated_at).ljust(8)
+    cwd = fmt_cwd(s.cwd).ljust(22)
+    summary = (s.summary or "(no summary)")[:52]
+    return f"{tag}  {age}  {cwd}  {summary}"
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    import questionary
+    from questionary import Style
+
+    theme = Style([
+        ("qmark",        "fg:#6c71c4 bold"),
+        ("question",     "bold"),
+        ("answer",       "fg:#268bd2 bold"),
+        ("pointer",      "fg:#6c71c4 bold"),
+        ("highlighted",  "fg:#268bd2 bold"),
+        ("selected",     "fg:#2aa198"),
+        ("separator",    "fg:#586e75"),
+        ("instruction",  "fg:#586e75"),
+        ("text",         ""),
+    ])
+
     print("scanning sessions...")
     claude_sessions = parse_claude_sessions()
     codex_sessions = parse_codex_sessions()
@@ -618,26 +627,21 @@ def main() -> None:
         print("no sessions found")
         sys.exit(1)
 
-    # show session list
-    print(f"\nfound {len(claude_sessions)} claude + {len(codex_sessions)} codex sessions\n")
-    print_sessions(all_sessions[:30])
+    display = all_sessions[:40]
+    print(f"found {len(claude_sessions)} claude + {len(codex_sessions)} codex sessions")
 
-    # pick session
-    while True:
-        try:
-            raw = input("pick session number (or q to quit): ").strip()
-        except (EOFError, KeyboardInterrupt):
-            sys.exit(0)
-        if raw.lower() in ("q", "quit", "exit"):
-            sys.exit(0)
-        try:
-            idx = int(raw) - 1
-            if 0 <= idx < len(all_sessions[:30]):
-                session = all_sessions[idx]
-                break
-        except ValueError:
-            pass
-        print("invalid selection, try again")
+    # session picker
+    choices = [questionary.Choice(title=session_label(s), value=s) for s in display]
+    session = questionary.select(
+        "pick a session:",
+        choices=choices,
+        style=theme,
+        use_shortcuts=False,
+        use_indicator=True,
+    ).ask()
+
+    if session is None:
+        sys.exit(0)
 
     # load full context
     print(f"\nloading {session.source} session {session.id[:12]}...")
@@ -646,12 +650,10 @@ def main() -> None:
     else:
         load_codex_context(session)
 
-    # determine target
     target = "codex" if session.source == "claude" else "claude"
-    print(f"source: {session.source}  ->  target: {target}")
-    print(f"messages: {len(session.messages)}  tool calls: {len(session.tool_calls)}  thinking blocks: {len(session.thinking)}")
+    print(f"{session.source} -> {target}  |  {len(session.messages)} messages  {len(session.tool_calls)} tool calls  {len(session.thinking)} thinking blocks")
 
-    # build 3 tiers and show token estimates
+    # build tiers
     t1 = make_tier1(session)
     t2 = make_tier2(session)
     t3 = make_tier3(session)
@@ -660,26 +662,31 @@ def main() -> None:
     tok2 = est_tokens(t2)
     tok3 = est_tokens(t3)
 
-    print(f"""
-context tiers:
-  [1] full      {tok1:>6,} tokens  (conversation + tool activity + thinking + files)
-  [2] focused   {tok2:>6,} tokens  (conversation + tool activity + files, no thinking)
-  [3] minimal   {tok3:>6,} tokens  (conversation only)
-""")
+    tier_choices = [
+        questionary.Choice(
+            title=f"full      {tok1:>6,} tokens  (conversation + tools + thinking + files)",
+            value=t1,
+        ),
+        questionary.Choice(
+            title=f"focused   {tok2:>6,} tokens  (conversation + tools + files)",
+            value=t2,
+        ),
+        questionary.Choice(
+            title=f"minimal   {tok3:>6,} tokens  (conversation only)",
+            value=t3,
+        ),
+    ]
 
-    while True:
-        try:
-            raw = input("pick tier [1/2/3] (or q to quit): ").strip()
-        except (EOFError, KeyboardInterrupt):
-            sys.exit(0)
-        if raw.lower() in ("q", "quit"):
-            sys.exit(0)
-        if raw in ("1", "2", "3"):
-            tier = int(raw)
-            break
-        print("enter 1, 2, or 3")
+    markdown = questionary.select(
+        "pick context tier:",
+        choices=tier_choices,
+        style=theme,
+        use_indicator=True,
+    ).ask()
 
-    markdown = {1: t1, 2: t2, 3: t3}[tier]
+    if markdown is None:
+        sys.exit(0)
+
     launch_with_context(target, markdown, session.cwd)
 
 if __name__ == "__main__":
