@@ -601,19 +601,8 @@ CLAUDE_PERMISSION= ["default", "bypassPermissions", "acceptEdits", "dontAsk", "p
 
 CSS = """
 Screen {
-    background: $background;
+    background: transparent;
     &:inline { height: auto; border: none; }
-}
-
-#header {
-    height: 1;
-    padding: 0 1;
-    color: $text-muted;
-}
-
-SessionPicker, TierPicker, ConfigPicker {
-    height: auto;
-    padding: 0;
 }
 
 OptionList {
@@ -621,29 +610,26 @@ OptionList {
     height: auto;
     max-height: 22;
     padding: 0;
-    background: $background;
-    & > .option-list--option { padding: 0 1; }
-    & > .option-list--option-highlighted {
-        background: $surface;
-        color: $text;
-    }
+    background: transparent;
+    & > .option-list--option { padding: 0 1; background: transparent; }
+    & > .option-list--option-highlighted { background: $boost; }
+    & > .option-list--option-hover { background: transparent; }
+    & > .option-list--option-hover-highlighted { background: $boost; }
 }
 
 .label {
     height: 1;
     padding: 0 1;
-    color: $text-muted;
     text-style: bold;
+    background: transparent;
 }
 
 .hint {
     height: 1;
     padding: 0 1;
     color: $text-muted;
+    background: transparent;
 }
-
-.source-claude { color: $warning; }
-.source-codex  { color: $accent; }
 """
 
 class HandoffApp:
