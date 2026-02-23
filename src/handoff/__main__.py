@@ -594,7 +594,7 @@ def clean_summary(s: str) -> str:
 # ── textual app ───────────────────────────────────────────────────────────────
 
 CLAUDE_MODELS    = ["default", "claude-sonnet-4-6", "claude-opus-4-6", "claude-sonnet-4-5", "claude-opus-4-5", "claude-haiku-4-5-20251001"]
-CODEX_MODELS     = ["default", "o3", "o4-mini", "gpt-4o", "gpt-4.1", "gpt-4.1-mini"]
+CODEX_MODELS     = ["default", "gpt-5.3-codex", "gpt-5.2-codex", "o3", "o4-mini", "gpt-4.1", "gpt-4.1-mini"]
 CODEX_SANDBOX    = ["default", "workspace-write", "read-only", "danger-full-access"]
 CODEX_APPROVAL   = ["default", "on-request", "never", "untrusted"]
 CLAUDE_PERMISSION= ["default", "bypassPermissions", "acceptEdits", "dontAsk", "plan"]
