@@ -591,7 +591,108 @@ def fmt_cwd(cwd: str) -> str:
 def clean_summary(s: str) -> str:
     return s.replace("\n", " ").replace("\r", "").strip()
 
-# ── textual app ───────────────────────────────────────────────────────────────
+# ── ansi helpers ──────────────────────────────────────────────────────────────
+
+DIM    = "\033[2m"
+BOLD   = "\033[1m"
+RESET  = "\033[0m"
+ORANGE = "\033[38;5;208m"   # claude
+CYAN   = "\033[36m"         # codex
+WHITE  = "\033[37m"
+INVERT = "\033[7m"          # reverse video for highlight — inherits terminal bg
+
+def _hide_cursor():
+    sys.stdout.write("\033[?25l")
+    sys.stdout.flush()
+
+def _show_cursor():
+    sys.stdout.write("\033[?25h")
+    sys.stdout.flush()
+
+def _move_up(n: int):
+    if n > 0:
+        sys.stdout.write(f"\033[{n}A")
+
+def _clear_line():
+    sys.stdout.write("\033[2K\r")
+
+def _read_key() -> str:
+    """read a single keypress, handling arrow keys and j/k"""
+    import tty, termios
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = sys.stdin.read(1)
+        if ch == "\x1b":
+            ch2 = sys.stdin.read(1)
+            if ch2 == "[":
+                ch3 = sys.stdin.read(1)
+                if ch3 == "A": return "up"
+                if ch3 == "B": return "down"
+            return "esc"
+        if ch == "j": return "down"
+        if ch == "k": return "up"
+        if ch in ("\r", "\n"): return "enter"
+        if ch in ("q", "\x03"): return "quit"  # q or ctrl-c
+        return ch
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+def pick(label: str, items: list, fmt_fn=None, max_visible: int = 20) -> Optional[int]:
+    """
+    inline picker. prints items, handles j/k/arrows, returns index or None.
+    fmt_fn(index, item, is_selected) -> str for custom formatting.
+    """
+    if not items:
+        return None
+    if fmt_fn is None:
+        fmt_fn = lambda i, item, sel: f"{'>' if sel else ' '} {item}"
+
+    idx = 0
+    scroll_offset = 0
+    n = len(items)
+    visible = min(n, max_visible)
+
+    # print label + initial items
+    sys.stdout.write(f"{BOLD}{label}{RESET}\n")
+    total_lines = visible  # lines we'll redraw
+    for i in range(visible):
+        sys.stdout.write(fmt_fn(i, items[i], i == idx) + "\n")
+    sys.stdout.flush()
+
+    _hide_cursor()
+    try:
+        while True:
+            key = _read_key()
+            if key == "quit" or key == "esc":
+                return None
+            elif key == "enter":
+                return idx
+            elif key == "up":
+                if idx > 0:
+                    idx -= 1
+                    if idx < scroll_offset:
+                        scroll_offset = idx
+            elif key == "down":
+                if idx < n - 1:
+                    idx += 1
+                    if idx >= scroll_offset + visible:
+                        scroll_offset = idx - visible + 1
+
+            # redraw
+            _move_up(total_lines)
+            for vi in range(visible):
+                _clear_line()
+                ri = scroll_offset + vi
+                sys.stdout.write(fmt_fn(ri, items[ri], ri == idx) + "\n")
+            sys.stdout.flush()
+    except (EOFError, KeyboardInterrupt):
+        return None
+    finally:
+        _show_cursor()
+
+# ── config ────────────────────────────────────────────────────────────────────
 
 CLAUDE_MODELS    = ["default", "claude-sonnet-4-6", "claude-opus-4-6", "claude-sonnet-4-5", "claude-opus-4-5", "claude-haiku-4-5-20251001"]
 CODEX_MODELS     = ["default", "gpt-5.3-codex", "gpt-5.2-codex", "o3", "o4-mini", "gpt-4.1", "gpt-4.1-mini"]
@@ -599,249 +700,10 @@ CODEX_SANDBOX    = ["default", "workspace-write", "read-only", "danger-full-acce
 CODEX_APPROVAL   = ["default", "on-request", "never", "untrusted"]
 CLAUDE_PERMISSION= ["default", "bypassPermissions", "acceptEdits", "dontAsk", "plan"]
 
-CSS = """
-Screen {
-    background: transparent;
-    &:inline { height: auto; border: none; }
-}
-
-OptionList {
-    border: none;
-    height: auto;
-    max-height: 22;
-    padding: 0;
-    background: transparent;
-    & > .option-list--option { padding: 0 1; background: transparent; }
-    & > .option-list--option-highlighted { background: $boost; }
-    & > .option-list--option-hover { background: transparent; }
-    & > .option-list--option-hover-highlighted { background: $boost; }
-}
-
-.label {
-    height: 1;
-    padding: 0 1;
-    text-style: bold;
-    background: transparent;
-}
-
-.hint {
-    height: 1;
-    padding: 0 1;
-    color: $text-muted;
-    background: transparent;
-}
-"""
-
-class HandoffApp:
-    """orchestrates the multi-step flow, running one inline textual app per step"""
-
-    def __init__(self, sessions: list, cwd: str):
-        self.sessions = sessions
-        self.cwd = cwd
-        self.result: dict = {}
-
-    def run(self) -> Optional[dict]:
-        from textual.app import App, ComposeResult
-        from textual.widgets import OptionList, Label, Static
-        from textual.widgets._option_list import Option
-
-        sessions = self.sessions
-        cwd = self.cwd
-        result_holder: list = []
-
-        # ── step 1: scope ─────────────────────────────────────────────────────
-        here = [s for s in sessions if s.cwd == cwd]
-
-        class ScopeApp(App):
-            CSS_PATH = None
-            CSS = CSS
-            def compose(self) -> ComposeResult:
-                yield Label("  scope", classes="label")
-                opts = OptionList(
-                    Option(f"  this directory  {fmt_cwd(cwd)}  ({len(here)})", id="here"),
-                    Option(f"  all sessions  ({len(sessions)})", id="all"),
-                )
-                yield opts
-                yield Static("  j/k or arrows · enter to select · q to quit", classes="hint")
-            def on_option_list_option_selected(self, event) -> None:
-                result_holder.append(event.option.id)
-                self.exit()
-            def on_key(self, event) -> None:
-                if event.key == "q":
-                    self.exit()
-
-        ScopeApp().run(inline=True)
-        if not result_holder:
-            return None
-        scope = result_holder[0]
-        pool = here if scope == "here" else sessions
-        if not pool:
-            print(f"  no sessions in {cwd}")
-            return None
-        result_holder.clear()
-
-        # ── step 2: session picker ────────────────────────────────────────────
-        display = pool[:40]
-        show_cwd = scope == "all"
-
-        def row(s: SessionData) -> str:
-            src = ("claude" if s.source == "claude" else "codex ").ljust(6)
-            age = fmt_age(s.updated_at).ljust(4)
-            loc = (fmt_cwd(s.cwd).ljust(18) + "  ") if show_cwd else ""
-            summary = clean_summary(s.summary or "(no summary)")[:52]
-            return f"  {src}  {age}  {loc}{summary}"
-
-        col_header = ("  " + "tool".ljust(6) + "  " + "age".ljust(4) + "  " +
-                      ("dir".ljust(18) + "  " if show_cwd else "") + "summary")
-
-        class SessionApp(App):
-            CSS_PATH = None
-            CSS = CSS
-            def compose(self) -> ComposeResult:
-                yield Label("  session", classes="label")
-                yield Static(col_header, classes="hint")
-                yield OptionList(*[Option(row(s), id=s.id) for s in display])
-                yield Static("  j/k · enter · q", classes="hint")
-            def on_option_list_option_selected(self, event) -> None:
-                result_holder.append(event.option.id)
-                self.exit()
-            def on_key(self, event) -> None:
-                if event.key == "q":
-                    self.exit()
-
-        SessionApp().run(inline=True)
-        if not result_holder:
-            return None
-        session_id = result_holder[0]
-        session = next(s for s in display if s.id == session_id)
-        result_holder.clear()
-
-        # ── step 3: load context ──────────────────────────────────────────────
-        print(f"\n  loading {session.source} {session.id[:8]}...")
-        if session.source == "claude":
-            load_claude_context(session)
-        else:
-            load_codex_context(session)
-
-        target = "codex" if session.source == "claude" else "claude"
-        print(f"  {session.source} -> {target}  |  {len(session.messages)} msgs  {len(session.tool_calls)} tools  {len(session.thinking)} thinking\n")
-
-        t1 = make_tier1(session)
-        t2 = make_tier2(session)
-        t3 = make_tier3(session)
-        tok1, tok2, tok3 = est_tokens(t1), est_tokens(t2), est_tokens(t3)
-
-        tiers = [
-            ("full",    t1, f"  full     {tok1:>6,} tok  conversation + tools + thinking + files"),
-            ("focused", t2, f"  focused  {tok2:>6,} tok  conversation + tools + files"),
-            ("minimal", t3, f"  minimal  {tok3:>6,} tok  conversation only"),
-        ]
-
-        # ── step 4: tier picker ───────────────────────────────────────────────
-        class TierApp(App):
-            CSS_PATH = None
-            CSS = CSS
-            def compose(self) -> ComposeResult:
-                yield Label("  context", classes="label")
-                yield OptionList(*[Option(label, id=tid) for tid, _, label in tiers])
-                yield Static("  j/k · enter · q", classes="hint")
-            def on_option_list_option_selected(self, event) -> None:
-                result_holder.append(event.option.id)
-                self.exit()
-            def on_key(self, event) -> None:
-                if event.key == "q":
-                    self.exit()
-
-        TierApp().run(inline=True)
-        if not result_holder:
-            return None
-        tier_id = result_holder[0]
-        markdown = next(md for tid, md, _ in tiers if tid == tier_id)
-        result_holder.clear()
-
-        # ── step 5: launch config ─────────────────────────────────────────────
-        if target == "codex":
-            config_options = [
-                ("model",    CODEX_MODELS,    "model"),
-                ("sandbox",  CODEX_SANDBOX,   "sandbox"),
-                ("approval", CODEX_APPROVAL,  "approval"),
-            ]
-        else:
-            config_options = [
-                ("model",      CLAUDE_MODELS,     "model"),
-                ("permission", CLAUDE_PERMISSION,  "permission mode"),
-            ]
-
-        chosen_config: dict = {}
-
-        for key, choices, label in config_options:
-            result_holder.clear()
-
-            class ConfigApp(App):
-                CSS_PATH = None
-                CSS = CSS
-                _label = label
-                _choices = choices
-                _key = key
-                def compose(self) -> ComposeResult:
-                    yield Label(f"  {self._label}", classes="label")
-                    yield OptionList(*[Option(f"  {c}", id=c) for c in self._choices])
-                    yield Static("  j/k · enter · q", classes="hint")
-                def on_option_list_option_selected(self, event) -> None:
-                    result_holder.append(event.option.id)
-                    self.exit()
-                def on_key(self, event) -> None:
-                    if event.key == "q":
-                        self.exit()
-
-            ConfigApp().run(inline=True)
-            if not result_holder:
-                return None
-            chosen_config[key] = result_holder[0]
-
-        # web search for codex
-        extra_args: list = []
-        if target == "codex":
-            result_holder.clear()
-
-            class WebSearchApp(App):
-                CSS_PATH = None
-                CSS = CSS
-                def compose(self) -> ComposeResult:
-                    yield Label("  web search?", classes="label")
-                    yield OptionList(Option("  no", id="no"), Option("  yes", id="yes"))
-                    yield Static("  j/k · enter · q", classes="hint")
-                def on_option_list_option_selected(self, event) -> None:
-                    result_holder.append(event.option.id)
-                    self.exit()
-                def on_key(self, event) -> None:
-                    if event.key == "q":
-                        self.exit()
-
-            WebSearchApp().run(inline=True)
-            if not result_holder:
-                return None
-
-            model = chosen_config.get("model", "default")
-            sandbox = chosen_config.get("sandbox", "default")
-            approval = chosen_config.get("approval", "default")
-            if model != "default":       extra_args += ["-m", model]
-            if sandbox != "default":     extra_args += ["-s", sandbox]
-            if approval != "default":    extra_args += ["-a", approval]
-            if result_holder[0] == "yes": extra_args += ["--search"]
-        else:
-            model = chosen_config.get("model", "default")
-            permission = chosen_config.get("permission", "default")
-            if model != "default":      extra_args += ["--model", model]
-            if permission != "default": extra_args += ["--permission-mode", permission]
-
-        return {"session": session, "markdown": markdown, "target": target, "extra_args": extra_args}
-
-
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    print("scanning sessions...")
+    print(f"{DIM}scanning sessions...{RESET}")
     claude_sessions = parse_claude_sessions()
     codex_sessions  = parse_codex_sessions()
     all_sessions = claude_sessions + codex_sessions
@@ -851,16 +713,123 @@ def main() -> None:
         print("no sessions found")
         sys.exit(1)
 
-    print(f"  {len(claude_sessions)} claude  {len(codex_sessions)} codex\n")
+    cwd = os.getcwd()
+    here = [s for s in all_sessions if s.cwd == cwd]
+    print(f"  {ORANGE}{len(claude_sessions)} claude{RESET}  {CYAN}{len(codex_sessions)} codex{RESET}\n")
 
-    app = HandoffApp(all_sessions, os.getcwd())
-    result = app.run()
+    # ── step 1: scope ─────────────────────────────────────────────────────────
+    scope_items = [
+        f"this directory  {DIM}{fmt_cwd(cwd)}  ({len(here)}){RESET}",
+        f"all sessions  {DIM}({len(all_sessions)}){RESET}",
+    ]
+    def fmt_scope(i, item, sel):
+        ptr = f"{BOLD}>{RESET}" if sel else " "
+        hl = INVERT if sel else ""
+        return f"  {ptr} {hl}{item}{RESET}"
 
-    if not result:
+    si = pick("scope", scope_items, fmt_fn=fmt_scope)
+    if si is None:
         sys.exit(0)
 
+    pool = here if si == 0 else all_sessions
+    if not pool:
+        print(f"  no sessions in {cwd}")
+        sys.exit(1)
+    show_cwd = si == 1
+
+    # ── step 2: session picker ────────────────────────────────────────────────
+    display = pool[:40]
+
+    def fmt_session(i, s, sel):
+        ptr = f"{BOLD}>{RESET}" if sel else " "
+        hl = INVERT if sel else ""
+        src_color = ORANGE if s.source == "claude" else CYAN
+        src = s.source.ljust(6)
+        age = fmt_age(s.updated_at).ljust(4)
+        loc = (fmt_cwd(s.cwd).ljust(18) + "  ") if show_cwd else ""
+        summary = clean_summary(s.summary or "(no summary)")[:52]
+        return f"  {ptr} {hl}{src_color}{src}{RESET}  {hl}{DIM}{age}{RESET}  {hl}{loc}{summary}{RESET}"
+
     print()
-    launch_with_context(result["target"], result["markdown"], result["session"].cwd, result["extra_args"])
+    col_hdr = ("     " + "tool".ljust(6) + "  " + "age".ljust(4) + "  " +
+               ("dir".ljust(18) + "  " if show_cwd else "") + "summary")
+    sys.stdout.write(f"  {DIM}{col_hdr}{RESET}\n")
+
+    si = pick("session", display, fmt_fn=fmt_session)
+    if si is None:
+        sys.exit(0)
+    session = display[si]
+
+    # ── step 3: load context ──────────────────────────────────────────────────
+    print(f"\n  {DIM}loading {session.source} {session.id[:8]}...{RESET}")
+    if session.source == "claude":
+        load_claude_context(session)
+    else:
+        load_codex_context(session)
+
+    target = "codex" if session.source == "claude" else "claude"
+    print(f"  {session.source} -> {target}  {DIM}|  {len(session.messages)} msgs  {len(session.tool_calls)} tools  {len(session.thinking)} thinking{RESET}\n")
+
+    # ── step 4: tier ──────────────────────────────────────────────────────────
+    t1 = make_tier1(session)
+    t2 = make_tier2(session)
+    t3 = make_tier3(session)
+    tok1, tok2, tok3 = est_tokens(t1), est_tokens(t2), est_tokens(t3)
+
+    tier_items = [
+        (t1, f"full     {tok1:>6,} tok  {DIM}conversation + tools + thinking + files{RESET}"),
+        (t2, f"focused  {tok2:>6,} tok  {DIM}conversation + tools + files{RESET}"),
+        (t3, f"minimal  {tok3:>6,} tok  {DIM}conversation only{RESET}"),
+    ]
+
+    def fmt_tier(i, item, sel):
+        ptr = f"{BOLD}>{RESET}" if sel else " "
+        hl = INVERT if sel else ""
+        return f"  {ptr} {hl}{item[1]}{RESET}"
+
+    ti = pick("context", tier_items, fmt_fn=fmt_tier)
+    if ti is None:
+        sys.exit(0)
+    markdown = tier_items[ti][0]
+
+    # ── step 5: launch config ─────────────────────────────────────────────────
+    def fmt_opt(i, item, sel):
+        ptr = f"{BOLD}>{RESET}" if sel else " "
+        hl = INVERT if sel else ""
+        return f"  {ptr} {hl}{item}{RESET}"
+
+    extra_args = []
+    print()
+
+    if target == "codex":
+        opts = [("model", CODEX_MODELS), ("sandbox", CODEX_SANDBOX), ("approval", CODEX_APPROVAL), ("web search", ["no", "yes"])]
+        for label, choices in opts:
+            ci = pick(label, choices, fmt_fn=fmt_opt)
+            if ci is None:
+                sys.exit(0)
+            val = choices[ci]
+            if label == "model" and val != "default":
+                extra_args += ["-m", val]
+            elif label == "sandbox" and val != "default":
+                extra_args += ["-s", val]
+            elif label == "approval" and val != "default":
+                extra_args += ["-a", val]
+            elif label == "web search" and val == "yes":
+                extra_args += ["--search"]
+    else:
+        opts = [("model", CLAUDE_MODELS), ("permission mode", CLAUDE_PERMISSION)]
+        for label, choices in opts:
+            ci = pick(label, choices, fmt_fn=fmt_opt)
+            if ci is None:
+                sys.exit(0)
+            val = choices[ci]
+            if label == "model" and val != "default":
+                extra_args += ["--model", val]
+            elif label == "permission mode" and val != "default":
+                extra_args += ["--permission-mode", val]
+
+    print()
+    launch_with_context(target, markdown, session.cwd, extra_args)
 
 if __name__ == "__main__":
     main()
