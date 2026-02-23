@@ -588,15 +588,20 @@ def fmt_cwd(cwd: str) -> str:
     parts = cwd.split("/")
     return "/".join(parts[-2:]) if len(parts) > 2 else cwd
 
-def session_label(s: SessionData, show_cwd: bool = False) -> str:
-    src  = f"[{s.source}]".ljust(8)
-    age  = fmt_age(s.updated_at).ljust(7)
+def session_label(s: SessionData, show_cwd: bool = False):
+    from prompt_toolkit.formatted_text import HTML
+    age = fmt_age(s.updated_at).ljust(7)
     if show_cwd:
         loc = fmt_cwd(s.cwd).ljust(20) + "  "
     else:
         loc = ""
-    summary = (s.summary or "(no summary)")[:55]
-    return f"{src}  {age}  {loc}{summary}"
+    raw = (s.summary or "(no summary)").replace("\n", " ").replace("\r", "").replace("<", "").replace(">", "").replace("&", "")
+    summary = raw[:55]
+    if s.source == "claude":
+        src_html = '<claude>claude</claude>'
+    else:
+        src_html = '<codex>codex </codex>'
+    return HTML(f"{src_html}  {age}  {loc}{summary}")
 
 def _dim(text: str) -> str:
     return f"\033[2m{text}\033[0m"
@@ -615,10 +620,11 @@ CODEX_APPROVAL = ["(default)", "on-request", "never", "untrusted"]
 CLAUDE_PERMISSION = ["(default)", "bypassPermissions", "acceptEdits", "dontAsk", "plan"]
 
 def build_codex_args(q, style) -> list:
-    model = q.select("model:", choices=CODEX_MODELS, style=style).ask()
-    sandbox = q.select("sandbox:", choices=CODEX_SANDBOX, style=style).ask()
-    approval = q.select("approval policy:", choices=CODEX_APPROVAL, style=style).ask()
-    web_search = q.confirm("enable web search?", default=False, style=style).ask()
+    kw = dict(style=style, qmark="", pointer=">", use_indicator=False)
+    model = q.select("model:", choices=CODEX_MODELS, **kw).ask()
+    sandbox = q.select("sandbox:", choices=CODEX_SANDBOX, **kw).ask()
+    approval = q.select("approval:", choices=CODEX_APPROVAL, **kw).ask()
+    web_search = q.confirm("web search?", default=False, style=style, qmark="").ask()
 
     if model is None or sandbox is None:
         sys.exit(0)
@@ -635,8 +641,9 @@ def build_codex_args(q, style) -> list:
     return args
 
 def build_claude_args(q, style) -> list:
-    model = q.select("model:", choices=CLAUDE_MODELS, style=style).ask()
-    permission = q.select("permission mode:", choices=CLAUDE_PERMISSION, style=style).ask()
+    kw = dict(style=style, qmark="", pointer=">", use_indicator=False)
+    model = q.select("model:", choices=CLAUDE_MODELS, **kw).ask()
+    permission = q.select("permission mode:", choices=CLAUDE_PERMISSION, **kw).ask()
 
     if model is None or permission is None:
         sys.exit(0)
@@ -658,12 +665,14 @@ def main() -> None:
         ("qmark",       "fg:ansidefault bold"),
         ("question",    "bold"),
         ("answer",      "fg:ansidefault bold"),
-        ("pointer",     "fg:ansidefault bold"),
+        ("pointer",     "fg:ansiyellow bold"),
         ("highlighted", "fg:ansidefault bold underline"),
         ("selected",    "fg:ansidefault"),
-        ("separator",   "fg:ansidefault"),
-        ("instruction", "fg:ansidefault"),
+        ("separator",   "fg:ansibrightblack"),
+        ("instruction", "fg:ansibrightblack"),
         ("text",        ""),
+        ("claude",      "fg:ansiyellow"),
+        ("codex",       "fg:ansicyan"),
     ])
 
     print("scanning sessions...")
@@ -678,7 +687,7 @@ def main() -> None:
 
     # ── step 1: scope filter ──────────────────────────────────────────────────
     cwd = os.getcwd()
-    here = [s for s in all_sessions if s.cwd and (s.cwd == cwd or s.cwd.startswith(cwd + "/"))]
+    here = [s for s in all_sessions if s.cwd == cwd]
     n_here = len(here)
     n_all  = len(all_sessions)
 
@@ -690,7 +699,9 @@ def main() -> None:
         "scope:",
         choices=scope_choices,
         style=style,
-        use_indicator=True,
+        qmark="",
+        pointer=">",
+        use_indicator=False,
     ).ask()
     if scope is None:
         sys.exit(0)
@@ -703,7 +714,7 @@ def main() -> None:
     # ── step 2: session picker ────────────────────────────────────────────────
     show_cwd = scope == "all"
     display  = pool[:40]
-    sep = q.Separator(f"  {'tool':<8}  {'age':<7}  {'summary'}")
+    sep = q.Separator(f"  {'tool':<6}  {'age':<7}  {'summary'}")
     session_choices = [sep] + [
         q.Choice(title=session_label(s, show_cwd=show_cwd), value=s)
         for s in display
@@ -712,7 +723,9 @@ def main() -> None:
         "session:",
         choices=session_choices,
         style=style,
-        use_indicator=True,
+        qmark="",
+        pointer=">",
+        use_indicator=False,
     ).ask()
     if session is None:
         sys.exit(0)
@@ -741,7 +754,9 @@ def main() -> None:
         "context:",
         choices=tier_choices,
         style=style,
-        use_indicator=True,
+        qmark="",
+        pointer=">",
+        use_indicator=False,
     ).ask()
     if markdown is None:
         sys.exit(0)
