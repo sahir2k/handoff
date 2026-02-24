@@ -925,9 +925,26 @@ def cmd_handoff() -> None:
     else:
         load_codex_context(session)
 
-    target = "codex" if session.source == "claude" else "claude"
+    # pick target — default to the other tool, but allow same-tool handoff
+    default_target = "codex" if session.source == "claude" else "claude"
+    other_target = session.source  # same tool
+
+    target_items = [
+        f"{default_target}  {DIM}(default){RESET}",
+        f"{other_target}  {DIM}(same tool){RESET}",
+    ]
+    def fmt_target(i, item, sel):
+        ptr = f"{BOLD}>{RESET}" if sel else " "
+        hl = BOLD if sel else ""
+        return f"  {ptr} {hl}{item}{RESET}"
+
+    ti_target = pick("target", target_items, fmt_fn=fmt_target)
+    if ti_target is None:
+        sys.exit(0)
+    target = default_target if ti_target == 0 else other_target
+
     compact_note = "  compacted" if session.compact_summary else ""
-    print(f"  {session.source} -> {target}  {DIM}|  {len(session.messages)} msgs  {len(session.tool_calls)} tools  {len(session.thinking)} thinking{compact_note}{RESET}\n")
+    print(f"\n  {session.source} -> {target}  {DIM}|  {len(session.messages)} msgs  {len(session.tool_calls)} tools  {len(session.thinking)} thinking{compact_note}{RESET}\n")
 
     # ── step 4: tier ──────────────────────────────────────────────────────────
     t1 = make_tier1(session)
@@ -988,7 +1005,7 @@ def main() -> None:
         cmd_scan()
 
     elif cmd in ("-h", "--help", "help"):
-        print(f"{BOLD}handoff{RESET} — claude <-> codex session handoff\n")
+        print(f"{BOLD}handoff{RESET} — claude / codex session handoff\n")
         print(f"  {BOLD}handoff{RESET}              interactive session picker + handoff")
         print(f"  {BOLD}handoff list{RESET}          list sessions  {DIM}[claude|codex] [--limit N]{RESET}")
         print(f"  {BOLD}handoff scan{RESET}          show session discovery stats")
