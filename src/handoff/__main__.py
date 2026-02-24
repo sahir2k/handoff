@@ -492,33 +492,58 @@ def build_files(files: list[str]) -> str:
         return ""
     return "files modified: " + ", ".join(files)
 
-def make_tier1(session: SessionData, n_messages: int = 20) -> str:
+def _trim_conversation(messages: list[Message], budget: int) -> list[Message]:
+    """return as many recent messages as fit within token budget, trimming from the front"""
+    if not messages:
+        return messages
+    # try all messages first
+    total = est_tokens(build_conversation(messages))
+    if total <= budget:
+        return messages
+    # binary search: find max suffix that fits
+    lo, hi = 0, len(messages)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if est_tokens(build_conversation(messages[mid:])) <= budget:
+            hi = mid
+        else:
+            lo = mid + 1
+    return messages[lo:]
+
+def make_tier1(session: SessionData, max_tokens: int = 100_000) -> str:
     """full: header + tools + thinking + conversation + files"""
-    parts = [
+    non_convo = "\n\n".join(p for p in [
         build_header(session),
         build_tool_activity(session.tool_calls),
         build_thinking(session.thinking),
-        build_conversation(session.messages[-n_messages:]),
         build_files(session.files_modified),
-    ]
+    ] if p)
+    convo_budget = max_tokens - est_tokens(non_convo)
+    msgs = _trim_conversation(session.messages, convo_budget)
+    convo = build_conversation(msgs)
+    parts = [non_convo, convo]
     return "\n\n".join(p for p in parts if p)
 
-def make_tier2(session: SessionData, n_messages: int = 20) -> str:
+def make_tier2(session: SessionData, max_tokens: int = 100_000) -> str:
     """focused: header + tools + conversation + files"""
-    parts = [
+    non_convo = "\n\n".join(p for p in [
         build_header(session),
         build_tool_activity(session.tool_calls),
-        build_conversation(session.messages[-n_messages:]),
         build_files(session.files_modified),
-    ]
+    ] if p)
+    convo_budget = max_tokens - est_tokens(non_convo)
+    msgs = _trim_conversation(session.messages, convo_budget)
+    convo = build_conversation(msgs)
+    parts = [non_convo, convo]
     return "\n\n".join(p for p in parts if p)
 
-def make_tier3(session: SessionData, n_messages: int = 20) -> str:
+def make_tier3(session: SessionData, max_tokens: int = 100_000) -> str:
     """minimal: header + conversation only"""
-    parts = [
-        build_header(session),
-        build_conversation(session.messages[-n_messages:]),
-    ]
+    header = build_header(session)
+    convo_budget = max_tokens - est_tokens(header)
+    msgs = _trim_conversation(session.messages, convo_budget)
+    convo = build_conversation(msgs)
+    parts = [header, convo]
     return "\n\n".join(p for p in parts if p)
 
 # ── launch ────────────────────────────────────────────────────────────────────
