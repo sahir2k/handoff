@@ -619,17 +619,25 @@ def make_tier3(session: SessionData, max_tokens: int = 100_000) -> str:
 
 # ── launch ────────────────────────────────────────────────────────────────────
 
+_ARG_MAX_SAFE = 100_000  # stay well under os ARG_MAX (~128-256KB)
+
 def launch_with_context(target: str, source: str, markdown: str, cwd: str, handoff_prompt: str) -> None:
-    handoff_path = Path(cwd) / ".handoff.md" if cwd else Path.cwd() / ".handoff.md"
+    work_dir = cwd if cwd and Path(cwd).exists() else str(Path.cwd())
+    handoff_path = Path(work_dir) / ".handoff.md"
+
+    # always write the full context to .handoff.md
     try:
         handoff_path.write_text(markdown)
         print(f"  wrote {handoff_path}")
     except Exception as e:
         print(f"  warning: could not write handoff file: {e}")
 
-    work_dir = cwd if cwd and Path(cwd).exists() else str(Path.cwd())
+    # try to inline the full context as a cli arg; fall back to file reference if too long
+    inline_intro = f"i was working with {source} on a coding task and am continuing that session here. here's the context from that conversation:\n\n{markdown}\n\n---\n\n{handoff_prompt}"
+    file_intro = f"i was working with {source} on a coding task and am continuing that session here. the full conversation context has been saved to .handoff.md in this directory — read it first, then: {handoff_prompt}"
 
-    intro = f"i was working with {source} on a coding task and am continuing that session here. read the full context from .handoff.md in this directory, then: {handoff_prompt}"
+    use_file = len(inline_intro.encode("utf-8")) >= _ARG_MAX_SAFE
+    intro = file_intro if use_file else inline_intro
 
     if target == "codex":
         intro = f"read claude.md as well.\n\n{intro}"
@@ -639,6 +647,9 @@ def launch_with_context(target: str, source: str, markdown: str, cwd: str, hando
     else:
         print(f"unknown target: {target}")
         sys.exit(1)
+
+    if use_file:
+        print(f"  context too large for cli arg, using .handoff.md reference")
 
     print(f"  launching {target} in {work_dir}\n")
     try:
