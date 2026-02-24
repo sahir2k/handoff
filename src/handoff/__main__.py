@@ -71,8 +71,15 @@ def _extract_text_blocks(content) -> str:
     return ""
 
 def _is_real_user_message(text: str) -> bool:
-    skip = ("<environment_details>", "<system>", "# AGENTS.md", "<permissions", "<environment_context>")
-    return bool(text.strip()) and not any(text.startswith(s) for s in skip)
+    """filter out system-injected content, slash commands, xml tags, handoff summaries"""
+    t = text.strip()
+    if not t:
+        return False
+    if t.startswith("<") or t.startswith("/") or t.startswith("# AGENTS.md"):
+        return False
+    if "Session Handoff" in t:
+        return False
+    return True
 
 def parse_claude_sessions() -> list[SessionData]:
     base = Path.home() / ".claude" / "projects"
