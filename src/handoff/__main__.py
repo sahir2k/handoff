@@ -78,6 +78,16 @@ def _extract_text_blocks(content) -> str:
         return "\n".join(p for p in parts if p)
     return ""
 
+_HANDOFF_MARKERS = (
+    "Session Handoff",
+    "i was working with claude on a coding task",
+    "i was working with codex on a coding task",
+    "I'm continuing a coding session",
+    "continuing a coding session",
+    "previous session (Claude Code",
+    "previous session (OpenAI Codex",
+)
+
 def _is_real_user_message(text: str) -> bool:
     """filter out system-injected content, slash commands, xml tags, handoff summaries"""
     t = text.strip()
@@ -85,7 +95,7 @@ def _is_real_user_message(text: str) -> bool:
         return False
     if t.startswith("<") or t.startswith("/") or t.startswith("# AGENTS.md"):
         return False
-    if "Session Handoff" in t:
+    if any(marker in t for marker in _HANDOFF_MARKERS):
         return False
     return True
 
@@ -311,9 +321,13 @@ def parse_codex_sessions() -> list[SessionData]:
                 if not first_user and msg.get("type") == "event_msg":
                     payload = msg.get("payload", {})
                     if payload.get("type") == "user_message":
-                        first_user = (payload.get("message") or "")[:100]
+                        text = (payload.get("message") or "")[:200]
+                        if _is_real_user_message(text):
+                            first_user = text[:100]
                 if not first_user and msg.get("type") == "message" and msg.get("role") == "user":
-                    first_user = str(msg.get("content", ""))[:100]
+                    text = str(msg.get("content", ""))[:200]
+                    if _is_real_user_message(text):
+                        first_user = text[:100]
 
             stat = jsonl_file.stat()
             sessions.append(SessionData(
@@ -562,7 +576,7 @@ def launch_with_context(target: str, source: str, markdown: str, cwd: str, hando
     if target == "codex":
         cmd = ["codex", intro]
     elif target == "claude":
-        cmd = ["claude", "-p", intro]
+        cmd = ["claude", intro]
     else:
         print(f"unknown target: {target}")
         sys.exit(1)
