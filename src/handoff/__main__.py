@@ -390,6 +390,7 @@ def load_codex_context(session: SessionData) -> None:
     tool_calls: list[ToolCall] = []
     thinking: list[ThinkingBlock] = []
     files_modified: set[str] = set()
+    compact_summary = ""
     model = session.model
     token_input = 0
     token_output = 0
@@ -398,6 +399,32 @@ def load_codex_context(session: SessionData) -> None:
 
     for msg in raw_msgs:
         mtype = msg.get("type")
+
+        if mtype == "compacted":
+            # extract compacted conversation history
+            payload = msg.get("payload", {})
+            history = payload.get("replacement_history", [])
+            if history:
+                parts = []
+                for entry in history:
+                    if not isinstance(entry, dict) or entry.get("encrypted_content"):
+                        continue
+                    role = entry.get("role", "")
+                    if role not in ("user", "assistant"):
+                        continue
+                    content_parts = entry.get("content", [])
+                    text = " ".join(
+                        p.get("text", "") for p in content_parts
+                        if isinstance(p, dict) and p.get("text")
+                        and p.get("type") in ("input_text", "output_text", "text")
+                    ).strip()
+                    if text and _is_real_user_message(text):
+                        label = "User" if role == "user" else "Agent"
+                        parts.append(f"{label}: {text}")
+                candidate = "\n\n".join(parts)
+                if len(candidate) > len(compact_summary):
+                    compact_summary = candidate
+            continue
 
         if mtype == "turn_context":
             if msg.get("payload", {}).get("model") and not model:
@@ -480,6 +507,7 @@ def load_codex_context(session: SessionData) -> None:
     session.thinking = thinking
     session.files_modified = sorted(files_modified)
     session.model = model
+    session.compact_summary = compact_summary
     session.token_usage = (token_input, token_output)
 
 # ── handoff markdown builders ─────────────────────────────────────────────────
