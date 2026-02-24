@@ -11,17 +11,25 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Optional
 
 # ── token estimation ──────────────────────────────────────────────────────────
 
+_tokenizer = None
+
+def _get_tokenizer():
+    global _tokenizer
+    if _tokenizer is None:
+        import tiktoken
+        _tokenizer = tiktoken.get_encoding("cl100k_base")
+    return _tokenizer
+
 def est_tokens(text: str) -> int:
-    """rough token estimate: chars / 4"""
-    return max(1, len(text) // 4)
+    """token count via tiktoken cl100k_base (used by both gpt-4/codex and claude)"""
+    return len(_get_tokenizer().encode(text))
 
 # ── data types ────────────────────────────────────────────────────────────────
 
@@ -443,115 +451,79 @@ def load_codex_context(session: SessionData) -> None:
 
 # ── handoff markdown builders ─────────────────────────────────────────────────
 
-def build_tool_activity_section(tool_calls: list[ToolCall]) -> str:
+DEFAULT_HANDOFF_PROMPT = "read through this context and let me know once you're up to speed. don't start coding until i say so."
+
+def build_tool_activity(tool_calls: list[ToolCall]) -> str:
     if not tool_calls:
         return ""
-    # group by name
     groups: dict[str, list[str]] = {}
     for tc in tool_calls:
         groups.setdefault(tc.name, []).append(tc.summary)
-    lines = ["## Tool Activity", ""]
+    lines = ["tools used:"]
     for name, summaries in groups.items():
-        samples = " | ".join(f"`{s}`" for s in summaries[:3])
-        lines.append(f"- **{name}** (x{len(summaries)}): {samples}")
+        samples = ", ".join(summaries[:3])
+        lines.append(f"  {name} (x{len(summaries)}): {samples}")
     return "\n".join(lines)
 
-def build_conversation_section(messages: list[Message], full: bool = False) -> str:
+def build_conversation(messages: list[Message]) -> str:
     if not messages:
         return ""
-    lines = ["## Recent Conversation", ""]
+    lines = ["conversation:"]
     for msg in messages:
-        role = "User" if msg.role == "user" else "Assistant"
-        lines.append(f"### {role}")
-        lines.append("")
-        content = msg.content if full else (msg.content[:800] + ("..." if len(msg.content) > 800 else ""))
-        lines.append(content)
-        lines.append("")
+        role = "User" if msg.role == "user" else "Agent"
+        lines.append(f"\n{role}: {msg.content}")
     return "\n".join(lines)
 
-def build_thinking_section(thinking: list[ThinkingBlock]) -> str:
+def build_thinking(thinking: list[ThinkingBlock]) -> str:
     if not thinking:
         return ""
-    lines = ["## Key Decisions", ""]
+    lines = ["key decisions:"]
     for t in thinking[:5]:
-        lines.append(f"- {t.text}")
+        lines.append(f"  - {t.text}")
     return "\n".join(lines)
 
 def build_header(session: SessionData) -> str:
     source_label = "Claude Code" if session.source == "claude" else "OpenAI Codex"
-    lines = [
-        "# Session Handoff Context",
-        "",
-        "## Session Overview",
-        "",
-        "| Field | Value |",
-        "|-------|-------|",
-        f"| **Source** | {source_label} |",
-        f"| **Session ID** | `{session.id[:12]}` |",
-        f"| **Working Directory** | `{session.cwd}` |",
-    ]
-    if session.model:
-        lines.append(f"| **Model** | {session.model} |")
-    lines.append(f"| **Last Active** | {session.updated_at.strftime('%Y-%m-%d %H:%M')} |")
-    if session.token_usage != (0, 0):
-        inp, out = session.token_usage
-        lines.append(f"| **Tokens Used** | {inp:,} in / {out:,} out |")
-    if session.files_modified:
-        lines.append(f"| **Files Modified** | {len(session.files_modified)} |")
-    lines.append(f"| **Messages** | {len(session.messages)} |")
-    lines.append("")
+    summary = clean_summary(session.summary or "")[:120]
+    return f"previous session ({source_label}, {session.cwd}): {summary}"
 
-    if session.summary:
-        lines += ["## Summary", "", f"> {session.summary[:200]}", ""]
-
-    return "\n".join(lines)
-
-def build_footer() -> str:
-    return "\n---\n\n**You are continuing this session. Pick up exactly where it left off — review the context above and keep going.**"
-
-def build_files_section(files: list[str]) -> str:
+def build_files(files: list[str]) -> str:
     if not files:
         return ""
-    lines = ["## Files Modified", ""]
-    for f in files:
-        lines.append(f"- `{f}`")
-    return "\n".join(lines)
+    return "files modified: " + ", ".join(files)
 
 def make_tier1(session: SessionData, n_messages: int = 20) -> str:
-    """full: header + tool activity + thinking + conversation (last N, full text) + files"""
+    """full: header + tools + thinking + conversation + files"""
     parts = [
         build_header(session),
-        build_tool_activity_section(session.tool_calls),
-        build_thinking_section(session.thinking),
-        build_conversation_section(session.messages[-n_messages:], full=True),
-        build_files_section(session.files_modified),
-        build_footer(),
+        build_tool_activity(session.tool_calls),
+        build_thinking(session.thinking),
+        build_conversation(session.messages[-n_messages:]),
+        build_files(session.files_modified),
     ]
     return "\n\n".join(p for p in parts if p)
 
 def make_tier2(session: SessionData, n_messages: int = 20) -> str:
-    """focused: header + tool activity + conversation (last N, full text) + files — no thinking"""
+    """focused: header + tools + conversation + files"""
     parts = [
         build_header(session),
-        build_tool_activity_section(session.tool_calls),
-        build_conversation_section(session.messages[-n_messages:], full=True),
-        build_files_section(session.files_modified),
-        build_footer(),
+        build_tool_activity(session.tool_calls),
+        build_conversation(session.messages[-n_messages:]),
+        build_files(session.files_modified),
     ]
     return "\n\n".join(p for p in parts if p)
 
 def make_tier3(session: SessionData, n_messages: int = 20) -> str:
-    """minimal: header + conversation only (last N, full text)"""
+    """minimal: header + conversation only"""
     parts = [
         build_header(session),
-        build_conversation_section(session.messages[-n_messages:], full=True),
-        build_footer(),
+        build_conversation(session.messages[-n_messages:]),
     ]
     return "\n\n".join(p for p in parts if p)
 
 # ── launch ────────────────────────────────────────────────────────────────────
 
-def launch_with_context(target: str, markdown: str, cwd: str, extra_args: list) -> None:
+def launch_with_context(target: str, source: str, markdown: str, cwd: str, handoff_prompt: str) -> None:
     handoff_path = Path(cwd) / ".handoff.md" if cwd else Path.cwd() / ".handoff.md"
     try:
         handoff_path.write_text(markdown)
@@ -559,13 +531,13 @@ def launch_with_context(target: str, markdown: str, cwd: str, extra_args: list) 
     except Exception as e:
         print(f"  warning: could not write handoff file: {e}")
 
-    intro = f"I'm continuing a coding session. Here's the full context:\n\n---\n\n{markdown}"
+    intro = f"i was working with {source} on a coding task and am continuing that session here. here's the context from that conversation:\n\n{markdown}\n\n---\n\n{handoff_prompt}"
     work_dir = cwd if cwd and Path(cwd).exists() else str(Path.cwd())
 
     if target == "codex":
-        cmd = ["codex"] + extra_args + [intro]
+        cmd = ["codex", intro]
     elif target == "claude":
-        cmd = ["claude"] + extra_args + ["-p", intro]
+        cmd = ["claude", "-p", intro]
     else:
         print(f"unknown target: {target}")
         sys.exit(1)
@@ -605,7 +577,6 @@ BOLD   = "\033[1m"
 RESET  = "\033[0m"
 ORANGE = "\033[38;5;208m"   # claude
 CYAN   = "\033[36m"         # codex
-WHITE  = "\033[37m"
 
 def _hide_cursor():
     sys.stdout.write("\033[?25l")
@@ -698,13 +669,20 @@ def pick(label: str, items: list, fmt_fn=None, max_visible: int = 20) -> Optiona
     finally:
         _show_cursor()
 
-# ── config ────────────────────────────────────────────────────────────────────
+# ── input helper ──────────────────────────────────────────────────────────────
 
-CLAUDE_MODELS    = ["default", "claude-sonnet-4-6", "claude-opus-4-6", "claude-sonnet-4-5", "claude-opus-4-5", "claude-haiku-4-5-20251001"]
-CODEX_MODELS     = ["default", "gpt-5.3-codex", "gpt-5.2-codex", "o3", "o4-mini", "gpt-4.1", "gpt-4.1-mini"]
-CODEX_SANDBOX    = ["default", "workspace-write", "read-only", "danger-full-access"]
-CODEX_APPROVAL   = ["default", "on-request", "never", "untrusted"]
-CLAUDE_PERMISSION= ["default", "bypassPermissions", "acceptEdits", "dontAsk", "plan"]
+def editable_input(label: str, default: str) -> str:
+    """show a default value the user can edit or just press enter to accept"""
+    sys.stdout.write(f"{BOLD}{label}{RESET} {DIM}(enter to accept, type to replace){RESET}\n")
+    sys.stdout.write(f"  {DIM}{default}{RESET}\n")
+    sys.stdout.write(f"  > ")
+    sys.stdout.flush()
+    try:
+        val = input().strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return default
+    return val if val else default
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
@@ -799,44 +777,12 @@ def main() -> None:
         sys.exit(0)
     markdown = tier_items[ti][0]
 
-    # ── step 5: launch config ─────────────────────────────────────────────────
-    def fmt_opt(i, item, sel):
-        ptr = f"{BOLD}>{RESET}" if sel else " "
-        hl = BOLD if sel else ""
-        return f"  {ptr} {hl}{item}{RESET}"
-
-    extra_args = []
+    # ── step 5: handoff prompt ────────────────────────────────────────────────
     print()
-
-    if target == "codex":
-        opts = [("model", CODEX_MODELS), ("sandbox", CODEX_SANDBOX), ("approval", CODEX_APPROVAL), ("web search", ["no", "yes"])]
-        for label, choices in opts:
-            ci = pick(label, choices, fmt_fn=fmt_opt)
-            if ci is None:
-                sys.exit(0)
-            val = choices[ci]
-            if label == "model" and val != "default":
-                extra_args += ["-m", val]
-            elif label == "sandbox" and val != "default":
-                extra_args += ["-s", val]
-            elif label == "approval" and val != "default":
-                extra_args += ["-a", val]
-            elif label == "web search" and val == "yes":
-                extra_args += ["--search"]
-    else:
-        opts = [("model", CLAUDE_MODELS), ("permission mode", CLAUDE_PERMISSION)]
-        for label, choices in opts:
-            ci = pick(label, choices, fmt_fn=fmt_opt)
-            if ci is None:
-                sys.exit(0)
-            val = choices[ci]
-            if label == "model" and val != "default":
-                extra_args += ["--model", val]
-            elif label == "permission mode" and val != "default":
-                extra_args += ["--permission-mode", val]
+    handoff_prompt = editable_input("handoff prompt", DEFAULT_HANDOFF_PROMPT)
 
     print()
-    launch_with_context(target, markdown, session.cwd, extra_args)
+    launch_with_context(target, session.source, markdown, session.cwd, handoff_prompt)
 
 if __name__ == "__main__":
     main()

@@ -7,7 +7,7 @@ name = "handoff"
 version = "0.1.0"
 description = "claude <-> codex session handoff tool"
 requires-python = ">=3.8"
-dependencies = []
+dependencies = ["tiktoken>=0.7.0"]
 
 [project.scripts]
 handoff = "handoff.__main__:main"
