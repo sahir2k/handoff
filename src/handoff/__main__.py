@@ -586,6 +586,7 @@ def launch_with_context(target: str, source: str, markdown: str, cwd: str, hando
     work_dir = cwd if cwd and Path(cwd).exists() else str(Path.cwd())
 
     if target == "codex":
+        intro = f"read claude.md as well.\n\n{intro}"
         cmd = ["codex", intro]
     elif target == "claude":
         cmd = ["claude", intro]
@@ -798,11 +799,12 @@ def cmd_list(source_filter: str = "", limit: int = 20) -> None:
         src_color = ORANGE if s.source == "claude" else CYAN
         src = s.source.ljust(6)
         age = fmt_age(s.updated_at).ljust(4)
+        size = _fmt_size(s.size_bytes).ljust(5)
         loc = fmt_cwd(s.cwd).ljust(24)
         br = (s.branch[:16].ljust(16) + "  ") if s.branch else ""
         here_mark = "*" if s.cwd == cwd else " "
         summary = clean_summary(s.summary or "")[:40]
-        print(f"  {here_mark} {src_color}{src}{RESET}  {DIM}{age}{RESET}  {loc}  {br}{summary}")
+        print(f"  {here_mark} {src_color}{src}{RESET}  {DIM}{age}{RESET}  {DIM}{size}{RESET}  {loc}  {br}{summary}")
 
     if len(all_s) > limit:
         print(f"\n  {DIM}({len(all_s)} total, showing {limit}. use --limit to see more){RESET}")
@@ -852,15 +854,17 @@ def cmd_handoff() -> None:
         src_color = ORANGE if s.source == "claude" else CYAN
         src = s.source.ljust(6)
         age = fmt_age(s.updated_at).ljust(4)
+        size = _fmt_size(s.size_bytes).ljust(5)
         loc = (fmt_cwd(s.cwd).ljust(18) + "  ") if show_cwd else ""
         br = (DIM + s.branch[:12] + RESET + "  ") if s.branch else ""
-        summary = clean_summary(s.summary or "(no summary)")[:48]
+        summary = clean_summary(s.summary or "(no summary)")[:46]
         if sel:
-            return f"  {ptr} {BOLD}{src_color}{src}{RESET}  {BOLD}{age}{RESET}  {BOLD}{loc}{RESET}{br}{BOLD}{summary}{RESET}"
-        return f"  {ptr} {src_color}{src}{RESET}  {DIM}{age}{RESET}  {loc}{br}{summary}"
+            return f"  {ptr} {BOLD}{src_color}{src}{RESET}  {BOLD}{age}{RESET}  {DIM}{size}{RESET}  {BOLD}{loc}{RESET}{br}{BOLD}{summary}{RESET}"
+        return f"  {ptr} {src_color}{src}{RESET}  {DIM}{age}{RESET}  {DIM}{size}{RESET}  {loc}{br}{summary}"
 
     print()
     col_hdr = ("     " + "tool".ljust(6) + "  " + "age".ljust(4) + "  " +
+               "size".ljust(5) + "  " +
                ("dir".ljust(18) + "  " if show_cwd else "") + "summary")
     sys.stdout.write(f"  {DIM}{col_hdr}{RESET}\n")
 
