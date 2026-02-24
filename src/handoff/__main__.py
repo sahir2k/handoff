@@ -60,7 +60,9 @@ class SessionData:
     thinking: list[ThinkingBlock] = field(default_factory=list)
     files_modified: list[str] = field(default_factory=list)
     model: str = ""
+    branch: str = ""
     token_usage: tuple[int, int] = (0, 0)  # (input, output)
+    size_bytes: int = 0
 
 # ── claude parser ─────────────────────────────────────────────────────────────
 
@@ -121,6 +123,7 @@ def parse_claude_sessions() -> list[SessionData]:
             cwd = ""
             first_user = ""
             model = ""
+            branch = ""
 
             # quick scan for metadata
             for line in lines[:50]:
@@ -134,6 +137,8 @@ def parse_claude_sessions() -> list[SessionData]:
                     cwd = msg["cwd"]
                 if msg.get("model") and not model:
                     model = msg["model"]
+                if msg.get("gitBranch") and not branch:
+                    branch = msg["gitBranch"]
                 if not first_user and msg.get("type") == "user":
                     content = msg.get("message", {}).get("content", "")
                     text = _extract_text_blocks(content)
@@ -152,6 +157,8 @@ def parse_claude_sessions() -> list[SessionData]:
                 updated_at=datetime.fromtimestamp(stat.st_mtime),
                 path=jsonl_file,
                 model=model,
+                branch=branch,
+                size_bytes=stat.st_size,
             ))
         except Exception:
             continue
@@ -306,6 +313,7 @@ def parse_codex_sessions() -> list[SessionData]:
             cwd = ""
             first_user = ""
             model = ""
+            branch = ""
 
             for line in lines[:150]:
                 try:
@@ -318,6 +326,8 @@ def parse_codex_sessions() -> list[SessionData]:
                         cwd = payload.get("cwd", "")
                     if not model:
                         model = payload.get("model", "")
+                    if not branch:
+                        branch = payload.get("git_branch") or payload.get("gitBranch", "")
                 if not first_user and msg.get("type") == "event_msg":
                     payload = msg.get("payload", {})
                     if payload.get("type") == "user_message":
@@ -338,6 +348,8 @@ def parse_codex_sessions() -> list[SessionData]:
                 updated_at=datetime.fromtimestamp(stat.st_mtime),
                 path=jsonl_file,
                 model=model,
+                branch=branch,
+                size_bytes=stat.st_size,
             ))
         except Exception:
             continue
@@ -723,9 +735,81 @@ def editable_input(label: str, default: str) -> str:
         return default
     return val if val else default
 
-# ── main ──────────────────────────────────────────────────────────────────────
+# ── subcommands ───────────────────────────────────────────────────────────────
 
-def main() -> None:
+def _scan_all() -> tuple[list[SessionData], list[SessionData]]:
+    return parse_claude_sessions(), parse_codex_sessions()
+
+def _fmt_size(b: int) -> str:
+    if b < 1024:
+        return f"{b}B"
+    if b < 1024 * 1024:
+        return f"{b // 1024}K"
+    return f"{b / (1024 * 1024):.1f}M"
+
+def cmd_scan() -> None:
+    """show session discovery stats"""
+    claude_sessions, codex_sessions = _scan_all()
+    all_s = claude_sessions + codex_sessions
+
+    print(f"{BOLD}handoff scan{RESET}\n")
+    print(f"  {ORANGE}claude{RESET}  {len(claude_sessions)} sessions")
+    print(f"  {CYAN}codex{RESET}   {len(codex_sessions)} sessions")
+    print(f"  total   {len(all_s)} sessions\n")
+
+    if not all_s:
+        return
+
+    # directories with most sessions
+    dir_counts: dict[str, int] = {}
+    branch_counts: dict[str, int] = {}
+    total_bytes = 0
+    for s in all_s:
+        dir_counts[s.cwd] = dir_counts.get(s.cwd, 0) + 1
+        if s.branch:
+            branch_counts[s.branch] = branch_counts.get(s.branch, 0) + 1
+        total_bytes += s.size_bytes
+
+    top_dirs = sorted(dir_counts.items(), key=lambda x: -x[1])[:5]
+    print(f"  total size  {_fmt_size(total_bytes)}")
+    print(f"  directories {len(dir_counts)}\n")
+
+    print(f"  {DIM}top directories:{RESET}")
+    for d, c in top_dirs:
+        print(f"    {fmt_cwd(d).ljust(30)}  {c} sessions")
+
+    if branch_counts:
+        top_branches = sorted(branch_counts.items(), key=lambda x: -x[1])[:5]
+        print(f"\n  {DIM}top branches:{RESET}")
+        for b, c in top_branches:
+            print(f"    {b.ljust(30)}  {c} sessions")
+
+def cmd_list(source_filter: str = "", limit: int = 20) -> None:
+    """list sessions in tabular format"""
+    claude_sessions, codex_sessions = _scan_all()
+    all_s = claude_sessions + codex_sessions
+    all_s.sort(key=lambda s: s.updated_at, reverse=True)
+
+    if source_filter:
+        all_s = [s for s in all_s if s.source == source_filter]
+
+    cwd = os.getcwd()
+    for s in all_s[:limit]:
+        src_color = ORANGE if s.source == "claude" else CYAN
+        src = s.source.ljust(6)
+        age = fmt_age(s.updated_at).ljust(4)
+        loc = fmt_cwd(s.cwd).ljust(24)
+        br = (s.branch[:16].ljust(16) + "  ") if s.branch else ""
+        here_mark = "*" if s.cwd == cwd else " "
+        summary = clean_summary(s.summary or "")[:40]
+        print(f"  {here_mark} {src_color}{src}{RESET}  {DIM}{age}{RESET}  {loc}  {br}{summary}")
+
+    if len(all_s) > limit:
+        print(f"\n  {DIM}({len(all_s)} total, showing {limit}. use --limit to see more){RESET}")
+
+# ── interactive handoff (default) ─────────────────────────────────────────────
+
+def cmd_handoff() -> None:
     print(f"{DIM}scanning sessions...{RESET}")
     claude_sessions = parse_claude_sessions()
     codex_sessions  = parse_codex_sessions()
@@ -769,10 +853,11 @@ def main() -> None:
         src = s.source.ljust(6)
         age = fmt_age(s.updated_at).ljust(4)
         loc = (fmt_cwd(s.cwd).ljust(18) + "  ") if show_cwd else ""
-        summary = clean_summary(s.summary or "(no summary)")[:52]
+        br = (DIM + s.branch[:12] + RESET + "  ") if s.branch else ""
+        summary = clean_summary(s.summary or "(no summary)")[:48]
         if sel:
-            return f"  {ptr} {BOLD}{src_color}{src}{RESET}  {BOLD}{age}{RESET}  {BOLD}{loc}{summary}{RESET}"
-        return f"  {ptr} {src_color}{src}{RESET}  {DIM}{age}{RESET}  {loc}{summary}"
+            return f"  {ptr} {BOLD}{src_color}{src}{RESET}  {BOLD}{age}{RESET}  {BOLD}{loc}{RESET}{br}{BOLD}{summary}{RESET}"
+        return f"  {ptr} {src_color}{src}{RESET}  {DIM}{age}{RESET}  {loc}{br}{summary}"
 
     print()
     col_hdr = ("     " + "tool".ljust(6) + "  " + "age".ljust(4) + "  " +
@@ -822,6 +907,46 @@ def main() -> None:
 
     print()
     launch_with_context(target, session.source, markdown, session.cwd, handoff_prompt)
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    args = sys.argv[1:]
+
+    if not args:
+        cmd_handoff()
+        return
+
+    cmd = args[0]
+
+    if cmd in ("list", "ls"):
+        source = ""
+        limit = 20
+        for i, a in enumerate(args[1:], 1):
+            if a in ("claude", "codex"):
+                source = a
+            elif a == "--limit" and i < len(args) - 1:
+                try:
+                    limit = int(args[i + 1])
+                except ValueError:
+                    pass
+            elif a.isdigit():
+                limit = int(a)
+        cmd_list(source_filter=source, limit=limit)
+
+    elif cmd == "scan":
+        cmd_scan()
+
+    elif cmd in ("-h", "--help", "help"):
+        print(f"{BOLD}handoff{RESET} — claude <-> codex session handoff\n")
+        print(f"  {BOLD}handoff{RESET}              interactive session picker + handoff")
+        print(f"  {BOLD}handoff list{RESET}          list sessions  {DIM}[claude|codex] [--limit N]{RESET}")
+        print(f"  {BOLD}handoff scan{RESET}          show session discovery stats")
+        print(f"  {BOLD}handoff help{RESET}          show this help")
+
+    else:
+        # unknown subcommand — treat as default
+        cmd_handoff()
 
 if __name__ == "__main__":
     main()
