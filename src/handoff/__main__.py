@@ -61,6 +61,7 @@ class SessionData:
     files_modified: list[str] = field(default_factory=list)
     model: str = ""
     branch: str = ""
+    compact_summary: str = ""  # compacted prior context from long sessions
     token_usage: tuple[int, int] = (0, 0)  # (input, output)
     size_bytes: int = 0
 
@@ -198,12 +199,17 @@ def load_claude_context(session: SessionData) -> None:
     thinking: list[ThinkingBlock] = []
     files_modified: set[str] = set()
     messages: list[Message] = []
+    compact_summary = ""
     model = session.model
 
     for msg in raw_msgs:
         if msg.get("type") in ("queue-operation", "system"):
             continue
         if msg.get("isCompactSummary"):
+            # extract the compacted prior context instead of skipping
+            text = _extract_text_blocks(msg.get("message", {}).get("content", ""))
+            if text and len(text) > len(compact_summary):
+                compact_summary = text
             continue
         if not model and msg.get("model"):
             model = msg["model"]
@@ -257,6 +263,7 @@ def load_claude_context(session: SessionData) -> None:
     session.thinking = thinking
     session.files_modified = sorted(files_modified)
     session.model = model
+    session.compact_summary = compact_summary
 
 def _format_tool_call(name: str, inp: dict, result: str = "") -> str:
     shell_tools = {"Bash", "exec_command", "shell_command"}
@@ -508,6 +515,11 @@ def build_thinking(thinking: list[ThinkingBlock]) -> str:
         lines.append(f"  - {t.text}")
     return "\n".join(lines)
 
+def build_prior_context(compact_summary: str) -> str:
+    if not compact_summary:
+        return ""
+    return f"prior context (compacted from earlier in the session):\n{compact_summary}"
+
 def build_header(session: SessionData) -> str:
     source_label = "Claude Code" if session.source == "claude" else "OpenAI Codex"
     summary = clean_summary(session.summary or "")[:120]
@@ -537,9 +549,10 @@ def _trim_conversation(messages: list[Message], budget: int) -> list[Message]:
     return messages[lo:]
 
 def make_tier1(session: SessionData, max_tokens: int = 100_000) -> str:
-    """full: header + tools + thinking + conversation + files"""
+    """full: prior context + header + tools + thinking + conversation + files"""
     non_convo = "\n\n".join(p for p in [
         build_header(session),
+        build_prior_context(session.compact_summary),
         build_tool_activity(session.tool_calls),
         build_thinking(session.thinking),
         build_files(session.files_modified),
@@ -551,9 +564,10 @@ def make_tier1(session: SessionData, max_tokens: int = 100_000) -> str:
     return "\n\n".join(p for p in parts if p)
 
 def make_tier2(session: SessionData, max_tokens: int = 100_000) -> str:
-    """focused: header + tools + conversation + files"""
+    """focused: prior context + header + tools + conversation + files"""
     non_convo = "\n\n".join(p for p in [
         build_header(session),
+        build_prior_context(session.compact_summary),
         build_tool_activity(session.tool_calls),
         build_files(session.files_modified),
     ] if p)
@@ -564,12 +578,15 @@ def make_tier2(session: SessionData, max_tokens: int = 100_000) -> str:
     return "\n\n".join(p for p in parts if p)
 
 def make_tier3(session: SessionData, max_tokens: int = 100_000) -> str:
-    """minimal: header + conversation only"""
-    header = build_header(session)
-    convo_budget = max_tokens - est_tokens(header)
+    """minimal: prior context + header + conversation only"""
+    non_convo = "\n\n".join(p for p in [
+        build_header(session),
+        build_prior_context(session.compact_summary),
+    ] if p)
+    convo_budget = max_tokens - est_tokens(non_convo)
     msgs = _trim_conversation(session.messages, convo_budget)
     convo = build_conversation(msgs)
-    parts = [header, convo]
+    parts = [non_convo, convo]
     return "\n\n".join(p for p in parts if p)
 
 # ── launch ────────────────────────────────────────────────────────────────────
@@ -881,7 +898,8 @@ def cmd_handoff() -> None:
         load_codex_context(session)
 
     target = "codex" if session.source == "claude" else "claude"
-    print(f"  {session.source} -> {target}  {DIM}|  {len(session.messages)} msgs  {len(session.tool_calls)} tools  {len(session.thinking)} thinking{RESET}\n")
+    compact_note = "  compacted" if session.compact_summary else ""
+    print(f"  {session.source} -> {target}  {DIM}|  {len(session.messages)} msgs  {len(session.tool_calls)} tools  {len(session.thinking)} thinking{compact_note}{RESET}\n")
 
     # ── step 4: tier ──────────────────────────────────────────────────────────
     t1 = make_tier1(session)
