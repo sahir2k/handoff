@@ -627,8 +627,9 @@ def launch_with_context(target: str, source: str, markdown: str, cwd: str, hando
     except Exception as e:
         print(f"  warning: could not write handoff file: {e}")
 
-    intro = f"i was working with {source} on a coding task and am continuing that session here. here's the context from that conversation:\n\n{markdown}\n\n---\n\n{handoff_prompt}"
     work_dir = cwd if cwd and Path(cwd).exists() else str(Path.cwd())
+
+    intro = f"i was working with {source} on a coding task and am continuing that session here. read the full context from .handoff.md in this directory, then: {handoff_prompt}"
 
     if target == "codex":
         intro = f"read claude.md as well.\n\n{intro}"
