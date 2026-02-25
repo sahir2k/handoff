@@ -621,6 +621,27 @@ def make_tier3(session: SessionData, max_tokens: int = 100_000) -> str:
 
 _ARG_MAX_SAFE = 100_000  # stay well under os ARG_MAX (~128-256KB)
 
+def _trim_markdown_to_fit(markdown: str, max_bytes: int) -> tuple[str, int]:
+    """trim markdown from the top (oldest content) to fit within byte limit.
+    returns (trimmed_markdown, lines_dropped)."""
+    if len(markdown.encode("utf-8")) <= max_bytes:
+        return markdown, 0
+    lines = markdown.split("\n")
+    # keep header (first few lines before 'conversation:') and trim conversation from top
+    header_end = 0
+    for i, line in enumerate(lines):
+        if line.strip() == "conversation:":
+            header_end = i + 1
+            break
+    header = lines[:header_end]
+    convo = lines[header_end:]
+    dropped = 0
+    while convo and len("\n".join(header + ["(trimmed older messages)", ""] + convo).encode("utf-8")) > max_bytes:
+        convo.pop(0)
+        dropped += 1
+    trimmed = "\n".join(header + ["(trimmed older messages)", ""] + convo) if dropped else markdown
+    return trimmed, dropped
+
 def launch_with_context(target: str, source: str, markdown: str, cwd: str, handoff_prompt: str) -> None:
     work_dir = cwd if cwd and Path(cwd).exists() else str(Path.cwd())
     handoff_path = Path(work_dir) / ".handoff.md"
@@ -632,12 +653,17 @@ def launch_with_context(target: str, source: str, markdown: str, cwd: str, hando
     except Exception as e:
         print(f"  warning: could not write handoff file: {e}")
 
-    # try to inline the full context as a cli arg; fall back to file reference if too long
-    inline_intro = f"i was working with {source} on a coding task and am continuing that session here. here's the context from that conversation:\n\n{markdown}\n\n---\n\n{handoff_prompt}"
-    file_intro = f"i was working with {source} on a coding task and am continuing that session here. the full conversation context has been saved to .handoff.md in this directory — read it first, then: {handoff_prompt}"
+    # calculate how much space the markdown gets (subtract the wrapper text + some buffer for codex prefix)
+    wrapper = f"i was working with {source} on a coding task and am continuing that session here. here's the context from that conversation:\n\n\n\n---\n\n{handoff_prompt}"
+    codex_prefix = "read claude.md as well.\n\n"
+    overhead = len(wrapper.encode("utf-8")) + len(codex_prefix.encode("utf-8"))
+    md_budget = _ARG_MAX_SAFE - overhead
 
-    use_file = len(inline_intro.encode("utf-8")) >= _ARG_MAX_SAFE
-    intro = file_intro if use_file else inline_intro
+    trimmed_md, dropped = _trim_markdown_to_fit(markdown, md_budget)
+    if dropped:
+        print(f"  trimmed {dropped} lines from top to fit cli arg limit")
+
+    intro = f"i was working with {source} on a coding task and am continuing that session here. here's the context from that conversation:\n\n{trimmed_md}\n\n---\n\n{handoff_prompt}"
 
     if target == "codex":
         intro = f"read claude.md as well.\n\n{intro}"
@@ -647,9 +673,6 @@ def launch_with_context(target: str, source: str, markdown: str, cwd: str, hando
     else:
         print(f"unknown target: {target}")
         sys.exit(1)
-
-    if use_file:
-        print(f"  context too large for cli arg, using .handoff.md reference")
 
     print(f"  launching {target} in {work_dir}\n")
     try:
