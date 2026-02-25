@@ -642,8 +642,8 @@ def _trim_markdown_to_fit(markdown: str, max_bytes: int) -> tuple[str, int]:
     trimmed = "\n".join(header + ["(trimmed older messages)", ""] + convo) if dropped else markdown
     return trimmed, dropped
 
-def launch_with_context(target: str, source: str, markdown: str, cwd: str, handoff_prompt: str) -> None:
-    work_dir = cwd if cwd and Path(cwd).exists() else str(Path.cwd())
+def launch_with_context(target: str, source: str, markdown: str, handoff_prompt: str) -> None:
+    work_dir = str(Path.cwd())
     handoff_path = Path(work_dir) / ".handoff.md"
 
     # always write the full context to .handoff.md
@@ -1008,7 +1008,7 @@ def cmd_handoff() -> None:
     handoff_prompt = editable_input("handoff prompt", DEFAULT_HANDOFF_PROMPT)
 
     print()
-    launch_with_context(target, session.source, markdown, session.cwd, handoff_prompt)
+    launch_with_context(target, session.source, markdown, handoff_prompt)
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
