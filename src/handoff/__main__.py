@@ -619,6 +619,17 @@ def make_tier3(session: SessionData, max_tokens: int = 100_000) -> str:
 
 # ── launch ────────────────────────────────────────────────────────────────────
 
+def _find_claude_memory(cwd: str) -> str:
+    """find and read claude code's MEMORY.md for a given project directory"""
+    slug = cwd.replace("/", "-")
+    memory_path = Path.home() / ".claude" / "projects" / slug / "memory" / "MEMORY.md"
+    if memory_path.exists():
+        try:
+            return memory_path.read_text(errors="replace").strip()
+        except Exception:
+            pass
+    return ""
+
 _ARG_MAX_SAFE = 100_000  # stay well under os ARG_MAX (~128-256KB)
 
 def _trim_markdown_to_fit(markdown: str, max_bytes: int) -> tuple[str, int]:
@@ -642,7 +653,7 @@ def _trim_markdown_to_fit(markdown: str, max_bytes: int) -> tuple[str, int]:
     trimmed = "\n".join(header + ["(trimmed older messages)", ""] + convo) if dropped else markdown
     return trimmed, dropped
 
-def launch_with_context(target: str, source: str, markdown: str, handoff_prompt: str) -> None:
+def launch_with_context(target: str, source: str, markdown: str, handoff_prompt: str, source_cwd: str = "") -> None:
     work_dir = str(Path.cwd())
     handoff_path = Path(work_dir) / ".handoff.md"
 
@@ -653,8 +664,18 @@ def launch_with_context(target: str, source: str, markdown: str, handoff_prompt:
     except Exception as e:
         print(f"  warning: could not write handoff file: {e}")
 
-    # calculate how much space the markdown gets (subtract the wrapper text + some buffer for codex prefix)
-    wrapper = f"i was working with {source} on a coding task and am continuing that session here. here's the context from that conversation:\n\n\n\n---\n\n{handoff_prompt}"
+    # look for claude memory from the source session's project
+    memory = ""
+    if source == "claude" and source_cwd:
+        memory = _find_claude_memory(source_cwd)
+        if memory:
+            print(f"  found claude memory for {source_cwd}")
+
+    # build the memory section if present
+    memory_section = f"\n\nclaude's memory notes from this project:\n{memory}" if memory else ""
+
+    # calculate how much space the markdown gets (subtract wrapper + memory + codex prefix)
+    wrapper = f"i was working with {source} on a coding task and am continuing that session here.{memory_section}\n\nhere's the context from that conversation:\n\n\n\n---\n\n{handoff_prompt}"
     codex_prefix = "read claude.md as well.\n\n"
     overhead = len(wrapper.encode("utf-8")) + len(codex_prefix.encode("utf-8"))
     md_budget = _ARG_MAX_SAFE - overhead
@@ -663,7 +684,7 @@ def launch_with_context(target: str, source: str, markdown: str, handoff_prompt:
     if dropped:
         print(f"  trimmed {dropped} lines from top to fit cli arg limit")
 
-    intro = f"i was working with {source} on a coding task and am continuing that session here. here's the context from that conversation:\n\n{trimmed_md}\n\n---\n\n{handoff_prompt}"
+    intro = f"i was working with {source} on a coding task and am continuing that session here.{memory_section}\n\nhere's the context from that conversation:\n\n{trimmed_md}\n\n---\n\n{handoff_prompt}"
 
     if target == "codex":
         intro = f"read claude.md as well.\n\n{intro}"
@@ -1008,7 +1029,7 @@ def cmd_handoff() -> None:
     handoff_prompt = editable_input("handoff prompt", DEFAULT_HANDOFF_PROMPT)
 
     print()
-    launch_with_context(target, session.source, markdown, handoff_prompt)
+    launch_with_context(target, session.source, markdown, handoff_prompt, source_cwd=session.cwd)
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
