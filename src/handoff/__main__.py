@@ -674,9 +674,12 @@ def launch_with_context(target: str, source: str, markdown: str, handoff_prompt:
     # build the memory section if present
     memory_section = f"\n\nclaude's memory notes from this project:\n{memory}" if memory else ""
 
-    # calculate how much space the markdown gets (subtract wrapper + memory + codex prefix)
+    # check for claude.md in launch directory
+    has_claude_md = (Path(work_dir) / "CLAUDE.md").exists() or (Path(work_dir) / "claude.md").exists()
+
+    # calculate how much space the markdown gets (subtract wrapper + memory + optional codex prefix)
     wrapper = f"i was working with {source} on a coding task and am continuing that session here.{memory_section}\n\nhere's the context from that conversation:\n\n\n\n---\n\n{handoff_prompt}"
-    codex_prefix = "read claude.md as well.\n\n"
+    codex_prefix = "read claude.md as well.\n\n" if has_claude_md else ""
     overhead = len(wrapper.encode("utf-8")) + len(codex_prefix.encode("utf-8"))
     md_budget = _ARG_MAX_SAFE - overhead
 
@@ -687,7 +690,8 @@ def launch_with_context(target: str, source: str, markdown: str, handoff_prompt:
     intro = f"i was working with {source} on a coding task and am continuing that session here.{memory_section}\n\nhere's the context from that conversation:\n\n{trimmed_md}\n\n---\n\n{handoff_prompt}"
 
     if target == "codex":
-        intro = f"read claude.md as well.\n\n{intro}"
+        if has_claude_md:
+            intro = f"read claude.md as well.\n\n{intro}"
         cmd = ["codex", intro]
     elif target == "claude":
         cmd = ["claude", intro]
