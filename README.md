@@ -1,6 +1,8 @@
 # handoff
 
-session handoff tool for claude code and openai codex. picks up where one ai coding session left off and hands the full conversation context to the other tool, so you can switch between claude and codex without losing track of what was being worked on.
+session handoff tool for claude code and codex cli.
+
+![screenshot](screenshot.png)
 
 ## install
 
