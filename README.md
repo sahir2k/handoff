@@ -15,3 +15,4 @@ uv tool install git+https://github.com/sahir2k/handoff
 - `handoff` — interactive picker to select a session and hand it off to the other tool
 - `handoff list` — list recent sessions across claude and codex
 - `handoff scan` — show session discovery stats (counts, top dirs, branches, total size)
+- `handoff skillsync` — sync claude skills to codex via symlinks

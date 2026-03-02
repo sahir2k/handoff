@@ -914,6 +914,88 @@ def cmd_list(source_filter: str = "", limit: int = 20) -> None:
     if len(all_s) > limit:
         print(f"\n  {DIM}({len(all_s)} total, showing {limit}. use --limit to see more){RESET}")
 
+# ── skill sync ────────────────────────────────────────────────────────────────
+
+_CODEX_BUILTIN_SKILLS = {".system", "skill-creator", "skill-installer"}
+
+def cmd_skillsync() -> None:
+    """sync claude skills to codex via symlinks"""
+    claude_skills = Path.home() / ".claude" / "skills"
+    codex_skills = Path.home() / ".codex" / "skills"
+
+    print(f"{BOLD}handoff skillsync{RESET}\n")
+
+    if not claude_skills.is_dir():
+        print(f"  {DIM}no claude skills directory found at {claude_skills}{RESET}")
+        return
+
+    codex_skills.mkdir(parents=True, exist_ok=True)
+
+    # find skill directories (must contain SKILL.md)
+    skills = []
+    for entry in sorted(claude_skills.iterdir()):
+        if not entry.is_dir() or entry.name.startswith("."):
+            continue
+        if (entry / "SKILL.md").exists():
+            skills.append(entry)
+
+    if not skills:
+        print(f"  {DIM}no skills found in {claude_skills}{RESET}")
+        return
+
+    print(f"  {ORANGE}claude{RESET}  {claude_skills}")
+    print(f"  {CYAN}codex{RESET}   {codex_skills}\n")
+
+    created = 0
+    skipped = 0
+    errors = 0
+
+    for skill_dir in skills:
+        name = skill_dir.name
+        target = codex_skills / name
+
+        if name in _CODEX_BUILTIN_SKILLS:
+            print(f"  {DIM}skip{RESET}  {name}  {DIM}(codex built-in){RESET}")
+            skipped += 1
+            continue
+
+        if target.is_symlink():
+            if target.resolve() == skill_dir.resolve():
+                print(f"  {DIM}ok{RESET}    {name}")
+                skipped += 1
+                continue
+            else:
+                # stale symlink, replace it
+                try:
+                    target.unlink()
+                except OSError as e:
+                    print(f"  {BOLD}err{RESET}   {name}  {DIM}could not remove stale symlink: {e}{RESET}")
+                    errors += 1
+                    continue
+
+        elif target.exists():
+            print(f"  {BOLD}skip{RESET}  {name}  {DIM}(real dir exists in codex, not overwriting){RESET}")
+            skipped += 1
+            continue
+
+        try:
+            target.symlink_to(skill_dir)
+            print(f"  {BOLD}link{RESET}  {name}  {DIM}-> {skill_dir}{RESET}")
+            created += 1
+        except OSError as e:
+            print(f"  {BOLD}err{RESET}   {name}  {DIM}{e}{RESET}")
+            errors += 1
+
+    print()
+    parts = []
+    if created:
+        parts.append(f"{created} linked")
+    if skipped:
+        parts.append(f"{skipped} ok")
+    if errors:
+        parts.append(f"{errors} errors")
+    print(f"  {DIM}{', '.join(parts)}{RESET}")
+
 # ── interactive handoff (default) ─────────────────────────────────────────────
 
 def cmd_handoff() -> None:
@@ -1064,11 +1146,15 @@ def main() -> None:
     elif cmd == "scan":
         cmd_scan()
 
+    elif cmd == "skillsync":
+        cmd_skillsync()
+
     elif cmd in ("-h", "--help", "help"):
         print(f"{BOLD}handoff{RESET} — claude / codex session handoff\n")
         print(f"  {BOLD}handoff{RESET}              interactive session picker + handoff")
         print(f"  {BOLD}handoff list{RESET}          list sessions  {DIM}[claude|codex] [--limit N]{RESET}")
         print(f"  {BOLD}handoff scan{RESET}          show session discovery stats")
+        print(f"  {BOLD}handoff skillsync{RESET}     sync claude skills -> codex via symlinks")
         print(f"  {BOLD}handoff help{RESET}          show this help")
 
     else:
