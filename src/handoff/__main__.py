@@ -918,54 +918,63 @@ def cmd_list(source_filter: str = "", limit: int = 20) -> None:
 
 _CODEX_BUILTIN_SKILLS = {".system", "skill-creator", "skill-installer"}
 
-def cmd_skillsync() -> None:
-    """sync claude skills to codex via symlinks"""
-    claude_skills = Path.home() / ".claude" / "skills"
-    codex_skills = Path.home() / ".codex" / "skills"
+def _fix_skill_frontmatter(skill_md: Path) -> bool:
+    """quote yaml frontmatter values that contain colons (codex parser is strict).
+    returns True if the file was modified."""
+    text = skill_md.read_text(errors="replace")
+    if not text.startswith("---"):
+        return False
+    end = text.find("\n---", 3)
+    if end == -1:
+        return False
+    frontmatter = text[4:end]  # skip "---\n"
+    body = text[end + 1:]      # from the closing "---" onward
+    fixed_lines = []
+    changed = False
+    for line in frontmatter.splitlines():
+        m = re.match(r"^(\w+):\s+(.+)$", line)
+        if m:
+            key, val = m.group(1), m.group(2)
+            if ":" in val and not (val.startswith('"') and val.endswith('"')):
+                val = '"' + val.replace('"', '\\"') + '"'
+                line = f"{key}: {val}"
+                changed = True
+        fixed_lines.append(line)
+    if changed:
+        skill_md.write_text("---\n" + "\n".join(fixed_lines) + "\n" + body)
+    return changed
 
-    print(f"{BOLD}handoff skillsync{RESET}\n")
+def _sync_symlinks(source_dir: Path, target_dir: Path,
+                    skip_names: set[str] | None = None,
+                    match_fn=None, fix_fn=None) -> tuple[int, int, int]:
+    if skip_names is None:
+        skip_names = set()
+    if match_fn is None:
+        match_fn = lambda e: e.is_dir()
 
-    if not claude_skills.is_dir():
-        print(f"  {DIM}no claude skills directory found at {claude_skills}{RESET}")
-        return
+    target_dir.mkdir(parents=True, exist_ok=True)
+    created = skipped = errors = 0
 
-    codex_skills.mkdir(parents=True, exist_ok=True)
-
-    # find skill directories (must contain SKILL.md)
-    skills = []
-    for entry in sorted(claude_skills.iterdir()):
-        if not entry.is_dir() or entry.name.startswith("."):
+    for entry in sorted(source_dir.iterdir()):
+        if entry.name.startswith(".") or not match_fn(entry):
             continue
-        if (entry / "SKILL.md").exists():
-            skills.append(entry)
+        name = entry.name
+        target = target_dir / name
 
-    if not skills:
-        print(f"  {DIM}no skills found in {claude_skills}{RESET}")
-        return
+        if fix_fn:
+            fix_fn(entry)
 
-    print(f"  {ORANGE}claude{RESET}  {claude_skills}")
-    print(f"  {CYAN}codex{RESET}   {codex_skills}\n")
-
-    created = 0
-    skipped = 0
-    errors = 0
-
-    for skill_dir in skills:
-        name = skill_dir.name
-        target = codex_skills / name
-
-        if name in _CODEX_BUILTIN_SKILLS:
-            print(f"  {DIM}skip{RESET}  {name}  {DIM}(codex built-in){RESET}")
+        if name in skip_names:
+            print(f"  {DIM}skip{RESET}  {name}  {DIM}(built-in){RESET}")
             skipped += 1
             continue
 
         if target.is_symlink():
-            if target.resolve() == skill_dir.resolve():
+            if target.resolve() == entry.resolve():
                 print(f"  {DIM}ok{RESET}    {name}")
                 skipped += 1
                 continue
             else:
-                # stale symlink, replace it
                 try:
                     target.unlink()
                 except OSError as e:
@@ -974,19 +983,21 @@ def cmd_skillsync() -> None:
                     continue
 
         elif target.exists():
-            print(f"  {BOLD}skip{RESET}  {name}  {DIM}(real dir exists in codex, not overwriting){RESET}")
+            print(f"  {BOLD}skip{RESET}  {name}  {DIM}(already exists in target, not overwriting){RESET}")
             skipped += 1
             continue
 
         try:
-            target.symlink_to(skill_dir)
-            print(f"  {BOLD}link{RESET}  {name}  {DIM}-> {skill_dir}{RESET}")
+            target.symlink_to(entry)
+            print(f"  {BOLD}link{RESET}  {name}  {DIM}-> {entry}{RESET}")
             created += 1
         except OSError as e:
             print(f"  {BOLD}err{RESET}   {name}  {DIM}{e}{RESET}")
             errors += 1
 
-    print()
+    return created, skipped, errors
+
+def _print_sync_summary(created: int, skipped: int, errors: int) -> None:
     parts = []
     if created:
         parts.append(f"{created} linked")
@@ -994,7 +1005,74 @@ def cmd_skillsync() -> None:
         parts.append(f"{skipped} ok")
     if errors:
         parts.append(f"{errors} errors")
-    print(f"  {DIM}{', '.join(parts)}{RESET}")
+    if parts:
+        print(f"  {DIM}{', '.join(parts)}{RESET}")
+
+def cmd_skillsync() -> None:
+    """sync claude skills, commands, and AGENTS.md to codex"""
+    print(f"{BOLD}handoff skillsync{RESET}")
+
+    # ── skills: ~/.claude/skills/ -> ~/.codex/skills/ ────────────────────────
+    claude_skills = Path.home() / ".claude" / "skills"
+    codex_skills = Path.home() / ".codex" / "skills"
+
+    print(f"\n  {BOLD}skills{RESET}  {DIM}{claude_skills} -> {codex_skills}{RESET}\n")
+
+    if claude_skills.is_dir():
+        def _fix_skill(entry: Path) -> None:
+            skill_md = entry / "SKILL.md"
+            if skill_md.exists() and _fix_skill_frontmatter(skill_md):
+                print(f"  {BOLD}fix{RESET}   {entry.name}  {DIM}(quoted frontmatter values){RESET}")
+
+        c, s, e = _sync_symlinks(
+            claude_skills, codex_skills,
+            skip_names=_CODEX_BUILTIN_SKILLS,
+            match_fn=lambda entry: entry.is_dir() and (entry / "SKILL.md").exists(),
+            fix_fn=_fix_skill,
+        )
+        _print_sync_summary(c, s, e)
+    else:
+        print(f"  {DIM}no claude skills found{RESET}")
+
+    # ── commands: ~/.claude/commands/*.md -> ~/.codex/prompts/*.md ────────────
+    claude_commands = Path.home() / ".claude" / "commands"
+    codex_prompts = Path.home() / ".codex" / "prompts"
+
+    print(f"\n  {BOLD}commands{RESET}  {DIM}{claude_commands} -> {codex_prompts}{RESET}\n")
+
+    if claude_commands.is_dir():
+        c, s, e = _sync_symlinks(
+            claude_commands, codex_prompts,
+            match_fn=lambda entry: entry.is_file() and entry.suffix == ".md",
+        )
+        _print_sync_summary(c, s, e)
+    else:
+        print(f"  {DIM}no claude commands found{RESET}")
+
+    # ── AGENTS.md: symlink to CLAUDE.md in cwd ──────────────────────────────
+    cwd = Path.cwd()
+    claude_md = cwd / "CLAUDE.md"
+    agents_md = cwd / "AGENTS.md"
+
+    print(f"\n  {BOLD}agents.md{RESET}  {DIM}{cwd}{RESET}\n")
+
+    if not claude_md.exists():
+        print(f"  {DIM}no CLAUDE.md in current directory{RESET}")
+    elif agents_md.is_symlink():
+        if agents_md.resolve() == claude_md.resolve():
+            print(f"  {DIM}ok{RESET}    AGENTS.md -> CLAUDE.md")
+        else:
+            print(f"  {DIM}skip{RESET}  AGENTS.md  {DIM}(symlink points elsewhere){RESET}")
+    elif agents_md.exists():
+        print(f"  {DIM}skip{RESET}  AGENTS.md  {DIM}(already exists){RESET}")
+    else:
+        try:
+            agents_md.symlink_to("CLAUDE.md")
+            print(f"  {BOLD}link{RESET}  AGENTS.md -> CLAUDE.md")
+        except OSError as e:
+            print(f"  {BOLD}err{RESET}   AGENTS.md  {DIM}{e}{RESET}")
+
+    print()
 
 # ── interactive handoff (default) ─────────────────────────────────────────────
 
@@ -1154,7 +1232,7 @@ def main() -> None:
         print(f"  {BOLD}handoff{RESET}              interactive session picker + handoff")
         print(f"  {BOLD}handoff list{RESET}          list sessions  {DIM}[claude|codex] [--limit N]{RESET}")
         print(f"  {BOLD}handoff scan{RESET}          show session discovery stats")
-        print(f"  {BOLD}handoff skillsync{RESET}     sync claude skills -> codex via symlinks")
+        print(f"  {BOLD}handoff skillsync{RESET}     sync skills, commands, and AGENTS.md to codex")
         print(f"  {BOLD}handoff help{RESET}          show this help")
 
     else:
